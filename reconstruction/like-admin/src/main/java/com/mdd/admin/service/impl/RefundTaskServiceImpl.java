@@ -276,11 +276,35 @@ public class RefundTaskServiceImpl implements IRefundTaskService {
                             finishRejected(task, null, result.getMessage(), 0L));
                 }
             } catch (Exception e) {
-                log.warn("微信退款对账查询异常 taskId={} outRefundNo={}",
+                // 对账查询失败意味着资金状态未知，不能静默；下一轮继续重试。
+                log.error("微信退款对账查询异常，资金状态待确认 taskId={} outRefundNo={}",
                         task.getId(), task.getOutRefundNo(), e);
             }
         }
         return confirmed;
+    }
+
+    /**
+     * 对账超时告警：PROCESSING 超过阈值仍未确认时写 error 日志（不改变任务状态）。
+     *
+     * <p>微信退款可能长时间停留在处理中；没有告警时后台只能看到「退款中」，
+     * 资金异常无法被值班/对账及时发现。本方法只做观测，最终状态仍由
+     * {@link #reconcileProcessing(int)} 的渠道查询决定。</p>
+     */
+    @Override
+    public int alertStuckProcessing(int alertSeconds, int batchSize) {
+        int thresholdSeconds = alertSeconds <= 0 ? 1800 : alertSeconds;
+        long threshold = TimeUtils.timestamp() - thresholdSeconds;
+        List<RefundTask> stuck = refundTaskMapper.selectList(new QueryWrapper<RefundTask>()
+                .eq("status", RefundTask.STATUS_PROCESSING)
+                .le("update_time", threshold)
+                .orderByAsc("id")
+                .last("limit " + safeBatch(batchSize)));
+        for (RefundTask task : stuck) {
+            log.error("退款任务长时间处于退款中，对账未确认，需人工核查 taskId={} outRefundNo={} updateTime={} resultMsg={}",
+                    task.getId(), task.getOutRefundNo(), task.getUpdateTime(), task.getResultMsg());
+        }
+        return stuck.size();
     }
 
     @Override
@@ -296,17 +320,31 @@ public class RefundTaskServiceImpl implements IRefundTaskService {
                 .last("limit " + safeBatch(batchSize)));
         int count = 0;
         for (RefundTask task : staleTasks) {
+            int retryCount = nullSafe(task.getRetryCount()) + 1;
+            int taskMaxRetry = task.getMaxRetry() == null || task.getMaxRetry() <= 0 ? maxRetry : task.getMaxRetry();
+            boolean exhausted = retryCount >= taskMaxRetry;
+            String message = exhausted
+                    ? "执行超时或进程中断，重排队次数已达上限，需人工处理"
+                    : "执行超时或进程中断，重新排队";
             UpdateWrapper<RefundTask> updateWrapper = new UpdateWrapper<RefundTask>()
                     .eq("id", task.getId())
                     .eq("status", RefundTask.STATUS_RUNNING)
                     .eq("execute_time", task.getExecuteTime())
-                    .set("status", RefundTask.STATUS_PENDING)
+                    .set("retry_count", retryCount)
+                    .set("status", exhausted ? RefundTask.STATUS_FAILED : RefundTask.STATUS_PENDING)
                     .set("next_retry_time", 0)
+                    .set("finish_time", exhausted ? now : 0L)
                     .set("update_time", now);
+            if (exhausted) {
+                updateWrapper.set("last_error", message);
+            }
             if (refundTaskMapper.update(null, updateWrapper) > 0) {
-                int attemptNo = nullSafe(task.getRetryCount()) + 1;
-                insertLog(task.getId(), attemptNo, "requeue", 1, task.getOutRefundNo(),
-                        "执行超时或进程中断，重新排队", 0, now);
+                insertLog(task.getId(), retryCount, "requeue", exhausted ? 2 : 1,
+                        task.getOutRefundNo(), message, 0, now);
+                if (exhausted) {
+                    log.error("退款任务重试耗尽（超时重排队达上限），转人工处理 taskId={} outRefundNo={} retryCount={}/{}",
+                            task.getId(), task.getOutRefundNo(), retryCount, taskMaxRetry);
+                }
                 count++;
             }
         }
@@ -449,7 +487,13 @@ public class RefundTaskServiceImpl implements IRefundTaskService {
                 .set("last_error", message)
                 .set("finish_time", exhausted ? now : 0L)
                 .set("update_time", now);
-        refundTaskMapper.update(null, taskUpdate);
+        int updated = refundTaskMapper.update(null, taskUpdate);
+        if (exhausted && updated > 0) {
+            // 重试耗尽后任务进入失败终态（next_retry_time=0，不再自动重试），
+            // 必须留 error 级别告警供对账/值班发现，人工可在后台任务列表重试。
+            log.error("退款任务重试耗尽，转人工处理 taskId={} outRefundNo={} retryCount={}/{} lastError={}",
+                    task.getId(), task.getOutRefundNo(), retryCount, taskMaxRetry, message);
+        }
         updateLog(logId, 2, message, costMs, now);
     }
 

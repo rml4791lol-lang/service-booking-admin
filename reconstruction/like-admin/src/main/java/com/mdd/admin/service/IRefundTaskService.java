@@ -59,4 +59,14 @@ public interface IRefundTaskService {
      * @return 本轮确认成功的任务数
      */
     int reconcileProcessing(int batchSize);
+
+    /**
+     * 对账超时告警：查出「退款中」超过阈值的任务并写 error 日志，供值班/对账发现
+     * 微信侧长期未确认的资金（不修改任务状态，仍由对账查询决定最终结果）。
+     *
+     * @param alertSeconds 超过该秒数仍未确认则告警
+     * @param batchSize    单轮最多检查条数
+     * @return 本轮告警的任务数
+     */
+    int alertStuckProcessing(int alertSeconds, int batchSize);
 }

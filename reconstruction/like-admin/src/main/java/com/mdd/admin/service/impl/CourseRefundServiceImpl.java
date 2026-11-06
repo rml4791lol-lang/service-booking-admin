@@ -409,6 +409,9 @@ implements ICourseRefundService {
             case RefundTask.STATUS_FAILED: {
                 return "\u5931\u8d25";
             }
+            case RefundTask.STATUS_PROCESSING: {
+                return "\u9000\u6b3e\u4e2d";
+            }
         }
         return "\u672a\u77e5";
     }

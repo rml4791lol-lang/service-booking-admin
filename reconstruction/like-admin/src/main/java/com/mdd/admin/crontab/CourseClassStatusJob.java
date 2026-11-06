@@ -19,7 +19,17 @@ import com.mdd.common.mapper.course.CourseClassMapper;
 import com.mdd.common.util.TimeUtils;
 import java.util.List;
 import javax.annotation.Resource;
+import org.springframework.stereotype.Component;
 
+/**
+ * 班级到期自动结课（la_dev_crontab 按 bean 名 courseClassStatusJob 调用）。
+ *
+ * <p>2026-11-07 定时任务审计补充：本类此前没有 @Component，线上 la_dev_crontab.error
+ * 长期为 “No bean named 'courseClassStatusJob' available”，每次执行都失败。补上 bean
+ * 注册；库中该行仍为停止状态，需管理员在「系统设置 → 系统维护 → 定时任务」改为运行后
+ * 才会执行。</p>
+ */
+@Component(value = "courseClassStatusJob")
 public class CourseClassStatusJob {
     @Resource
     CourseClassMapper courseClassMapper;

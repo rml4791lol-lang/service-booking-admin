@@ -380,13 +380,15 @@ const refundTaskStatusTextMap: Record<number, string> = {
     0: '待执行',
     1: '执行中',
     2: '成功',
-    3: '失败'
+    3: '失败',
+    4: '退款中'
 }
 const refundTaskTagMap: Record<number, string> = {
     0: 'info',
     1: 'warning',
     2: 'success',
-    3: 'danger'
+    3: 'danger',
+    4: 'warning'
 }
 
 function refundTaskStatusText(status: number | null | undefined) {

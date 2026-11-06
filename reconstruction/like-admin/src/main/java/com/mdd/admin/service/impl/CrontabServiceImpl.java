@@ -32,7 +32,9 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.mdd.admin.config.quartz.CronUtils;
 import com.mdd.admin.config.quartz.QuartzUtils;
+import com.mdd.admin.config.quartz.TaskConstants;
 import com.mdd.admin.service.ICrontabService;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.admin.validate.crontab.CrontabCreateValidate;
@@ -42,12 +44,15 @@ import com.mdd.admin.vo.CrontabListedVo;
 import com.mdd.common.core.PageResult;
 import com.mdd.common.entity.DevCrontab;
 import com.mdd.common.mapper.DevCrontabMapper;
+import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
 import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 import org.quartz.Scheduler;
 import org.quartz.SchedulerException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -56,6 +61,7 @@ import org.springframework.util.Assert;
 @Service
 public class CrontabServiceImpl
 implements ICrontabService {
+    private static final Logger log = LoggerFactory.getLogger(CrontabServiceImpl.class);
     @Resource
     Scheduler scheduler;
     @Resource
@@ -65,8 +71,35 @@ implements ICrontabService {
     public void init() throws SchedulerException {
         this.scheduler.clear();
         List<DevCrontab> jobs = this.crontabMapper.selectList(new QueryWrapper<DevCrontab>().isNull("delete_time"));
+        long now = System.currentTimeMillis();
         for (DevCrontab crontab : jobs) {
             QuartzUtils.createScheduleJob((Scheduler)this.scheduler, (DevCrontab)crontab);
+            if (TaskConstants.STATUS_STOP.equals(crontab.getStatus())) {
+                log.info("定时任务已停止，本次不调度: id={} name={}", crontab.getId(), crontab.getName());
+                continue;
+            }
+            if (TaskConstants.STATUS_FAIL.equals(crontab.getStatus())) {
+                log.warn("定时任务上次执行失败，本次继续调度等待自愈: id={} name={} error={}",
+                        crontab.getId(), crontab.getName(), crontab.getError());
+            }
+            this.warnIfMissed(crontab, now);
+        }
+    }
+
+    /** 漏跑告警（2026-11-07 定时任务审计）：上次执行后若已错过计划点，启动时先告警。 */
+    private void warnIfMissed(DevCrontab crontab, long nowMillis) {
+        Long lastTime = crontab.getLastTime();
+        if (lastTime == null || lastTime.longValue() <= 0L) {
+            log.warn("定时任务从未执行过（last_time 为空），请确认是否漏跑: id={} name={} expression={}",
+                    crontab.getId(), crontab.getName(), crontab.getExpression());
+            return;
+        }
+        Date missed = CronUtils.missedFireTime(crontab.getExpression(), lastTime, nowMillis);
+        if (missed != null) {
+            long overdueMinutes = Math.max(0L, (nowMillis - missed.getTime()) / 60000L);
+            log.warn("定时任务疑似漏跑: id={} name={} last_time={} 最近应执行={} 已逾期{}分钟 expression={}",
+                    crontab.getId(), crontab.getName(), lastTime, missed, overdueMinutes,
+                    crontab.getExpression());
         }
     }
 

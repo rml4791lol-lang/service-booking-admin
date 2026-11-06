@@ -73,7 +73,9 @@ public class QuartzUtils {
         if (StringUtils.isNotNull(CronUtils.nextExecution((String)job.getExpression()))) {
             scheduler.scheduleJob(jobDetail, (Trigger)trigger);
         }
-        if (!job.getStatus().equals(TaskConstants.STATUS_RUN)) {
+        Integer status = job.getStatus();
+        if (status == null || status.intValue() == 0 || TaskConstants.STATUS_STOP.equals(status)) {
+            // 1=运行、3=错误（继续调度以便自愈）才真正跑；2=停止/0=未运行/null 一律暂停。
             scheduler.pauseJob(QuartzUtils.getJobKey((Integer)jobId, (String)jobGroup));
         }
     }

@@ -32,6 +32,7 @@ public class MockRefundTaskExecutor implements RefundTaskExecutor {
 
     private static final String FAIL_MARKER = "MOCKFAIL";
     private static final String PROCESSING_MARKER = "MOCKPROCESSING";
+    private static final String QUERY_FAIL_MARKER = "MOCKQUERYFAIL";
     private static final String SETTLE_MARKER = "MOCK_SETTLE";
 
     @Override
@@ -53,6 +54,10 @@ public class MockRefundTaskExecutor implements RefundTaskExecutor {
 
     @Override
     public RefundExecutionResult query(RefundTask task) {
+        String transactionId = task.getTransactionId() == null ? "" : task.getTransactionId();
+        if (transactionId.startsWith(QUERY_FAIL_MARKER)) {
+            throw new IllegalStateException("mock 微信退款查询失败（可控故障）");
+        }
         String refundId = "MOCKREFUND" + task.getId();
         String resultMsg = task.getResultMsg() == null ? "" : task.getResultMsg();
         if (resultMsg.contains(SETTLE_MARKER)) {
