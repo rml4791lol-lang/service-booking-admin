@@ -15,7 +15,9 @@
 reconstruction/          后端（Maven 多模块）
 ├── pom.xml              父 POM
 ├── like-admin/          管理后台接口服务（Spring Boot 2.x / MyBatis-Plus / Sa-Token）
-└── like-common/         公共模块（实体、Mapper、工具、支付/存储插件）
+├── like-common/         公共模块（实体、Mapper、工具、支付/存储插件）
+├── like-generator/      代码生成模块
+└── db/schema.sql        数据库表结构（仅结构，无数据）
 admin-web/               管理前端（Vue 3 + TypeScript + Element Plus + Vite）
 ```
 
@@ -36,7 +38,16 @@ npm install
 npm run build
 ```
 
-运行时需要的数据库表结构、Redis、对象存储等不在本仓库内，请按实际环境自行准备；所有敏感配置通过环境变量注入（参考各 `application*.yml` 中的 `${...}` 占位）。
+### 数据库初始化
+
+```bash
+mysql -uroot -p -e "CREATE DATABASE sports DEFAULT CHARACTER SET utf8mb4;"
+mysql -uroot -p sports < reconstruction/db/schema.sql
+```
+
+`schema.sql` 只包含表结构（无任何数据）。管理员账号、菜单/角色、业务基础数据（字典、区域、配置）需按实际业务自行初始化。
+
+运行时还需要 Redis 与对象存储（本地存储或云存储），所有敏感配置通过环境变量注入（参考各 `application*.yml` 中的 `${...}` 占位与 `application-dev-example.yml`）。
 
 ## 主要能力（代码层面）
 
