@@ -1,0 +1,502 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mdd.admin.mapper.ReportQueryMapper">
+
+    <!--
+      #66 报表 SQL 聚合分页。
+      列表/计数/汇总/导出共用同一段 FROM+WHERE 口径；导出按 offset/limit 分批取页。
+      所有报表口径与 #65 文档（docs/settlement/报表口径说明.md）保持一致：
+        - 时间范围 startDate/endDate 含首尾（由 ReportServiceImpl 换算为 epoch / 日期字符串）；
+        - 课程报表 = 真实收益口径（订单/课时/核销/营业额），#102 起不再 join 社区/代理/教练台账，
+          也不再计算分成、平台留存与 3% 测算；
+        - 教练月营业额（#102）= 订单聚合与消课聚合各自按班级先聚合再 join，禁止与核销流水同一条
+          GROUP BY JOIN（会按流水行数放大营业额）。
+    -->
+
+    <!-- ============================================================ -->
+    <!-- 课程报表                                                      -->
+    <!-- ============================================================ -->
+
+    <sql id="courseBase">
+        SELECT
+            c.id AS courseClassId,
+            COALESCE(c.name, '') AS courseName,
+            COALESCE(c.community_id, 0) AS communityId,
+            COALESCE(comm_name.name, '') AS communityName,
+            COALESCE(c.instructor_id, 0) AS instructorId,
+            IF(COALESCE(ins.name, '') = '', COALESCE(c.instructor_name, ''), ins.name) AS instructorName,
+            COALESCE(o.order_count, 0) AS orderCount,
+            COALESCE(o.paid_amount, 0) AS paidAmount,
+            COALESCE(o.purchased_lessons, 0) AS purchasedLessons,
+            COALESCE(cons.consumed_lessons, 0) AS consumedLessons,
+            COALESCE(att.attended_students, 0) AS attendedStudents,
+            COALESCE(att.attended_lessons, 0) AS attendedLessons
+        FROM la_course_class c
+        LEFT JOIN (
+            SELECT o1.course_class_id,
+                   COUNT(*) AS order_count,
+                   SUM(o1.order_amount) AS paid_amount,
+                   SUM(COALESCE(o1.lesson_count, 0)) AS purchased_lessons
+            FROM la_recharge_order o1
+            WHERE o1.pay_status = 1
+              AND o1.delete_time IS NULL
+              AND (o1.refund_status &lt;&gt; 1 OR o1.refund_status IS NULL)
+              AND o1.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            GROUP BY o1.course_class_id
+        ) o ON o.course_class_id = c.id
+        LEFT JOIN (
+            SELECT cons1.course_class_id, COUNT(*) AS consumed_lessons
+            FROM la_course_consume_log cons1
+            WHERE cons1.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            GROUP BY cons1.course_class_id
+        ) cons ON cons.course_class_id = c.id
+        LEFT JOIN (
+            SELECT b.course_class_id,
+                   COUNT(*) AS attended_students,
+                   COUNT(DISTINCT CASE WHEN b.lesson_id &gt; 0 THEN b.lesson_id END) AS attended_lessons
+            FROM la_course_booking b
+            WHERE b.status = 10
+              AND b.lesson_date BETWEEN #{q.startDate} AND #{q.endDate}
+            GROUP BY b.course_class_id
+        ) att ON att.course_class_id = c.id
+        LEFT JOIN la_community comm_name
+               ON comm_name.id = c.community_id AND comm_name.delete_time IS NULL
+        LEFT JOIN la_instructor ins
+               ON ins.id = c.instructor_id AND ins.delete_time IS NULL
+        WHERE c.is_delete = 0
+          AND (COALESCE(o.order_count, 0) &gt; 0
+               OR COALESCE(cons.consumed_lessons, 0) &gt; 0
+               OR COALESCE(att.attended_students, 0) &gt; 0)
+          <if test="q.communityId != null">
+              AND c.community_id = #{q.communityId}
+          </if>
+          <if test="q.courseId != null">
+              AND c.id = #{q.courseId}
+          </if>
+          <if test="q.instructorId != null">
+              AND c.instructor_id = #{q.instructorId}
+          </if>
+          <if test="q.keyword != null">
+              AND (LOWER(COALESCE(c.name, '')) LIKE #{q.keyword}
+                   OR LOWER(COALESCE(comm_name.name, '')) LIKE #{q.keyword}
+                   OR LOWER(IF(COALESCE(ins.name, '') = '', COALESCE(c.instructor_name, ''), ins.name)) LIKE #{q.keyword})
+          </if>
+    </sql>
+
+    <select id="pageCourse" resultType="java.util.LinkedHashMap">
+        SELECT t.* FROM (
+            <include refid="courseBase"/>
+        ) t
+        ORDER BY t.paidAmount DESC, t.courseClassId ASC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <select id="countCourse" resultType="java.lang.Long">
+        SELECT COUNT(*) FROM (
+            <include refid="courseBase"/>
+        ) t
+    </select>
+
+    <select id="summaryCourse" resultType="java.util.LinkedHashMap">
+        SELECT
+            COUNT(*) AS classCount,
+            COALESCE(SUM(t.orderCount), 0) AS orderCount,
+            ROUND(COALESCE(SUM(t.paidAmount), 0), 2) AS paidAmount,
+            COALESCE(SUM(t.purchasedLessons), 0) AS purchasedLessons,
+            COALESCE(SUM(t.consumedLessons), 0) AS consumedLessons,
+            COALESCE(SUM(t.attendedStudents), 0) AS attendedStudents
+        FROM (
+            <include refid="courseBase"/>
+        ) t
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 教练月营业额（#102）                                          -->
+    <!-- 订单/消课各自先按班级聚合再 join，避免与流水同 join 放大金额。 -->
+    <!-- ============================================================ -->
+
+    <sql id="coachMonthBase">
+        SELECT
+            c.instructor_id AS coachId,
+            <!-- 两列 collation 不同，必须分别聚合再 coalesce，否则 MySQL 报 illegal mix of collations。 -->
+            COALESCE(NULLIF(MAX(ins.name), ''), MAX(c.instructor_name), '') AS coachName,
+            COALESCE(SUM(COALESCE(o.order_count, 0)), 0) AS orderCount,
+            ROUND(COALESCE(SUM(COALESCE(o.paid_amount, 0)), 0), 2) AS paidAmount,
+            COALESCE(SUM(COALESCE(cons.lesson_count, 0)), 0) AS lessonCount,
+            COALESCE(SUM(COALESCE(cons.service_persons, 0)), 0) AS servicePersons
+        FROM la_course_class c
+        LEFT JOIN la_instructor ins ON ins.id = c.instructor_id
+        LEFT JOIN (
+            SELECT o1.course_class_id,
+                   COUNT(*) AS order_count,
+                   SUM(o1.order_amount) AS paid_amount
+            FROM la_recharge_order o1
+            WHERE o1.pay_status = 1
+              AND o1.delete_time IS NULL
+              AND (o1.refund_status &lt;&gt; 1 OR o1.refund_status IS NULL)
+              AND o1.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            GROUP BY o1.course_class_id
+        ) o ON o.course_class_id = c.id
+        LEFT JOIN (
+            SELECT cl.course_class_id,
+                   COUNT(DISTINCT cl.lesson_no) AS lesson_count,
+                   COUNT(*) AS service_persons
+            FROM la_course_consume_log cl
+            WHERE cl.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            GROUP BY cl.course_class_id
+        ) cons ON cons.course_class_id = c.id
+        WHERE c.is_delete = 0
+          <if test="q.instructorId != null">
+              AND c.instructor_id = #{q.instructorId}
+          </if>
+        GROUP BY c.instructor_id
+        HAVING COALESCE(SUM(COALESCE(o.order_count, 0)), 0) &gt; 0
+            OR COALESCE(SUM(COALESCE(cons.service_persons, 0)), 0) &gt; 0
+    </sql>
+
+    <select id="countCoachMonth" resultType="java.lang.Long">
+        SELECT COUNT(*) FROM (
+            <include refid="coachMonthBase"/>
+        ) t
+    </select>
+
+    <select id="pageCoachMonth" resultType="java.util.LinkedHashMap">
+        SELECT t.* FROM (
+            <include refid="coachMonthBase"/>
+        ) t
+        ORDER BY t.paidAmount DESC, t.coachId ASC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <select id="summaryCoachMonth" resultType="java.util.LinkedHashMap">
+        SELECT
+            COALESCE(SUM(CASE WHEN t.coachId &gt; 0 THEN 1 ELSE 0 END), 0) AS coachCount,
+            COALESCE(SUM(t.orderCount), 0) AS orderCount,
+            ROUND(COALESCE(SUM(t.paidAmount), 0), 2) AS paidAmount,
+            COALESCE(SUM(t.lessonCount), 0) AS lessonCount,
+            COALESCE(SUM(t.servicePersons), 0) AS servicePersons
+        FROM (
+            <include refid="coachMonthBase"/>
+        ) t
+    </select>
+
+    <!-- 券包订单（course_class_id=0 且 coupon_goods_id&gt;0）无法归属教练，单独汇总说明。 -->
+    <select id="summaryCoachMonthCoupon" resultType="java.util.LinkedHashMap">
+        SELECT
+            COUNT(*) AS couponOrderCount,
+            ROUND(COALESCE(SUM(o.order_amount), 0), 2) AS couponOrderAmount
+        FROM la_recharge_order o
+        WHERE o.course_class_id = 0
+          AND o.coupon_goods_id &gt; 0
+          AND o.pay_status = 1
+          AND o.delete_time IS NULL
+          AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+          AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+    </select>
+
+    <select id="pageCoachMonthLessons" resultType="java.util.LinkedHashMap">
+        SELECT
+            cl.course_class_id AS courseClassId,
+            COALESCE(c.name, '') AS courseName,
+            cl.lesson_no AS lessonNo,
+            COUNT(*) AS servicePersons,
+            MAX(cl.create_time) AS lastConsumeTime
+        FROM la_course_consume_log cl
+        JOIN la_course_class c ON c.id = cl.course_class_id AND c.is_delete = 0
+        WHERE cl.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+          AND c.instructor_id = #{q.instructorId}
+        GROUP BY cl.course_class_id, c.name, cl.lesson_no
+        ORDER BY cl.course_class_id ASC, cl.lesson_no ASC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <select id="pageCoachMonthOrders" resultType="java.util.LinkedHashMap">
+        SELECT
+            o.id AS orderId,
+            o.sn AS sn,
+            o.course_class_id AS courseClassId,
+            COALESCE(c.name, '') AS courseName,
+            COALESCE(o.student_id, 0) AS studentId,
+            COALESCE(s.name, '') AS studentName,
+            COALESCE(o.lesson_count, 0) AS lessonCount,
+            o.order_amount AS orderAmount,
+            o.pay_time AS payTime
+        FROM la_recharge_order o
+        JOIN la_course_class c ON c.id = o.course_class_id AND c.is_delete = 0
+        LEFT JOIN la_student s ON s.id = o.student_id
+        WHERE c.instructor_id = #{q.instructorId}
+          AND o.pay_status = 1
+          AND o.delete_time IS NULL
+          AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+          AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+        ORDER BY o.pay_time DESC, o.id DESC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 核销报表                                                      -->
+    <!-- ============================================================ -->
+
+    <sql id="checkinFromWhere">
+        FROM la_course_consume_log l
+        JOIN la_course_class c ON c.id = l.course_class_id AND c.is_delete = 0
+        LEFT JOIN la_community comm ON comm.id = c.community_id AND comm.delete_time IS NULL
+        LEFT JOIN la_instructor ins ON ins.id = c.instructor_id AND ins.delete_time IS NULL
+        LEFT JOIN la_user u ON u.id = l.user_id
+        LEFT JOIN la_student st ON st.id = l.student_id
+        WHERE l.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+        <if test="q.matchNone != null">
+            AND 1 = 0
+        </if>
+        <if test="q.communityId != null">
+            AND c.community_id = #{q.communityId}
+        </if>
+        <if test="q.courseId != null">
+            AND l.course_class_id = #{q.courseId}
+        </if>
+        <if test="q.instructorId != null">
+            AND c.instructor_id = #{q.instructorId}
+        </if>
+        <if test="q.sourceType != null">
+            AND COALESCE(l.source_type, 0) = #{q.sourceType}
+        </if>
+        <if test="q.bookingStatus == 'attended'">
+            AND EXISTS (SELECT 1 FROM la_course_booking b
+                        WHERE b.user_id = l.user_id AND b.student_id = l.student_id
+                          AND b.course_class_id = l.course_class_id AND b.lesson_no = l.lesson_no
+                          AND b.status = 10)
+        </if>
+        <if test="q.bookingStatus == 'booked'">
+            AND EXISTS (SELECT 1 FROM la_course_booking b
+                        WHERE b.user_id = l.user_id AND b.student_id = l.student_id
+                          AND b.course_class_id = l.course_class_id AND b.lesson_no = l.lesson_no)
+            AND NOT EXISTS (SELECT 1 FROM la_course_booking b
+                        WHERE b.user_id = l.user_id AND b.student_id = l.student_id
+                          AND b.course_class_id = l.course_class_id AND b.lesson_no = l.lesson_no
+                          AND b.status = 10)
+        </if>
+        <if test="q.bookingStatus == 'none'">
+            AND NOT EXISTS (SELECT 1 FROM la_course_booking b
+                        WHERE b.user_id = l.user_id AND b.student_id = l.student_id
+                          AND b.course_class_id = l.course_class_id AND b.lesson_no = l.lesson_no)
+        </if>
+        <if test="q.keyword != null">
+            AND (LOWER(COALESCE(c.name, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(comm.name, '')) LIKE #{q.keyword}
+                 OR LOWER(IF(COALESCE(ins.name, '') = '', COALESCE(c.instructor_name, ''), ins.name)) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(st.name, '')) LIKE #{q.keyword}
+                 OR LOWER(IF(COALESCE(u.real_name, '') = '', COALESCE(u.nickname, ''), u.real_name)) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(u.mobile, '')) LIKE #{q.keyword})
+        </if>
+    </sql>
+
+    <select id="pageCheckinIds" resultType="java.lang.Integer">
+        SELECT l.id
+        <include refid="checkinFromWhere"/>
+        ORDER BY l.create_time DESC, l.id DESC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <select id="countCheckin" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        <include refid="checkinFromWhere"/>
+    </select>
+
+    <select id="summaryCheckin" resultType="java.util.LinkedHashMap">
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN COALESCE(l.source_type, 0) = 0 THEN 1 ELSE 0 END), 0) AS normalCount,
+            COALESCE(SUM(CASE WHEN COALESCE(l.source_type, 0) &lt;&gt; 0 THEN 1 ELSE 0 END), 0) AS manualCount,
+            COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM la_course_booking b
+                                           WHERE b.user_id = l.user_id AND b.student_id = l.student_id
+                                             AND b.course_class_id = l.course_class_id AND b.lesson_no = l.lesson_no
+                                             AND b.status = 10) THEN 1 ELSE 0 END), 0) AS attendedCount,
+            COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM la_course_booking b
+                                               WHERE b.user_id = l.user_id AND b.student_id = l.student_id
+                                                 AND b.course_class_id = l.course_class_id AND b.lesson_no = l.lesson_no)
+                              THEN 1 ELSE 0 END), 0) AS noBookingCount,
+            COUNT(DISTINCT CASE WHEN l.student_id &gt; 0 THEN l.student_id END) AS studentCount
+        <include refid="checkinFromWhere"/>
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 券流水报表                                                    -->
+    <!-- ============================================================ -->
+
+    <sql id="couponFromWhere">
+        FROM la_coupon_flow f
+        LEFT JOIN la_coupon_instance ci ON ci.id = f.coupon_id
+        LEFT JOIN la_coupon_goods g ON g.id = ci.goods_id
+        LEFT JOIN la_user u ON u.id = f.user_id
+        LEFT JOIN la_student st ON st.id = f.student_id
+        WHERE f.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+        <if test="q.matchNone != null">
+            AND 1 = 0
+        </if>
+        <if test="q.flowType != null">
+            AND f.type = #{q.flowType}
+        </if>
+        <if test="q.couponGoodsId != null">
+            AND ci.goods_id = #{q.couponGoodsId}
+        </if>
+        <if test="q.userId != null">
+            AND f.user_id = #{q.userId}
+        </if>
+        <if test="q.mobile != null">
+            AND u.mobile LIKE #{q.mobile}
+        </if>
+        <if test="q.keyword != null">
+            AND (LOWER(COALESCE(ci.sn, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(ci.title, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(g.title, ci.title, '')) LIKE #{q.keyword}
+                 OR LOWER(IF(COALESCE(u.real_name, '') = '', COALESCE(u.nickname, ''), u.real_name)) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(st.name, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(f.order_sn, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(f.remark, '')) LIKE #{q.keyword})
+        </if>
+    </sql>
+
+    <select id="pageCouponIds" resultType="java.lang.Integer">
+        SELECT f.id
+        <include refid="couponFromWhere"/>
+        ORDER BY f.create_time DESC, f.id DESC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <select id="countCoupon" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        <include refid="couponFromWhere"/>
+    </select>
+
+    <select id="summaryCoupon" resultType="java.util.LinkedHashMap">
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN f.type = 1 THEN 1 ELSE 0 END), 0) AS grantCount,
+            COALESCE(SUM(CASE WHEN f.type = 2 THEN 1 ELSE 0 END), 0) AS consumeCount,
+            COALESCE(SUM(CASE WHEN f.type = 3 THEN 1 ELSE 0 END), 0) AS reissueCount,
+            COALESCE(SUM(CASE WHEN f.type = 4 THEN 1 ELSE 0 END), 0) AS cancelCount,
+            COALESCE(SUM(CASE WHEN f.type = 5 THEN 1 ELSE 0 END), 0) AS refundCount,
+            COALESCE(SUM(CASE WHEN f.times &gt; 0 THEN f.times ELSE 0 END), 0) AS timesIn,
+            COALESCE(SUM(CASE WHEN f.times &lt; 0 THEN -f.times ELSE 0 END), 0) AS timesOut
+        <include refid="couponFromWhere"/>
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 活动报名报表                                                  -->
+    <!-- ============================================================ -->
+
+    <sql id="activityFromWhere">
+        FROM la_activity_signup s
+        LEFT JOIN la_activity a ON a.id = s.activity_id
+        LEFT JOIN la_area ar ON ar.id = a.area_id
+        LEFT JOIN la_community comm ON comm.id = ar.community_id AND comm.delete_time IS NULL
+        LEFT JOIN la_recharge_order o ON o.id = s.order_id
+        LEFT JOIN la_user u ON u.id = s.user_id
+        LEFT JOIN la_student st ON st.id = s.student_id
+        WHERE s.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+        <if test="q.matchNone != null">
+            AND 1 = 0
+        </if>
+        <if test="q.activityId != null">
+            AND s.activity_id = #{q.activityId}
+        </if>
+        <if test="q.communityId != null">
+            AND COALESCE(ar.community_id, 0) = #{q.communityId}
+        </if>
+        <if test="q.signupStatus != null">
+            AND COALESCE(s.status, 0) = #{q.signupStatus}
+        </if>
+        <if test="q.keyword != null">
+            AND (LOWER(COALESCE(a.title, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(a.place, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(ar.name, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(comm.name, '')) LIKE #{q.keyword}
+                 OR LOWER(IF(COALESCE(u.real_name, '') = '', COALESCE(u.nickname, ''), u.real_name)) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(u.mobile, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(st.name, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(o.sn, '')) LIKE #{q.keyword})
+        </if>
+    </sql>
+
+    <select id="pageActivityIds" resultType="java.lang.Integer">
+        SELECT s.id
+        <include refid="activityFromWhere"/>
+        ORDER BY s.create_time DESC, s.id DESC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <select id="countActivity" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        <include refid="activityFromWhere"/>
+    </select>
+
+    <select id="summaryActivity" resultType="java.util.LinkedHashMap">
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN s.status = 1 THEN 1 ELSE 0 END), 0) AS paidCount,
+            COALESCE(SUM(CASE WHEN s.status = 3 THEN 1 ELSE 0 END), 0) AS cancelledCount,
+            ROUND(COALESCE(SUM(CASE WHEN s.status = 1 AND o.pay_status = 1 THEN o.order_amount ELSE 0 END), 0), 2) AS paidAmount,
+            COUNT(DISTINCT CASE WHEN s.student_id &gt; 0 THEN s.student_id END) AS studentCount
+        <include refid="activityFromWhere"/>
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 开班申请报表                                                  -->
+    <!-- ============================================================ -->
+
+    <sql id="classApplyFromWhere">
+        FROM la_class_apply a
+        LEFT JOIN la_class_apply_group g ON g.id = a.group_id
+        LEFT JOIN la_region r ON r.id = g.street_id AND r.level = 3
+        LEFT JOIN la_user u ON u.id = a.user_id
+        LEFT JOIN la_student st ON st.id = a.student_id
+        WHERE a.delete_time IS NULL
+          AND a.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+        <if test="q.matchNone != null">
+            AND 1 = 0
+        </if>
+        <if test="q.streetId != null">
+            AND g.street_id = #{q.streetId}
+        </if>
+        <if test="q.courseType != null">
+            AND g.course_type = #{q.courseType}
+        </if>
+        <if test="q.groupStatus != null">
+            AND (CASE WHEN g.id IS NOT NULL THEN COALESCE(g.status, '') ELSE COALESCE(a.status, '') END) = #{q.groupStatus}
+        </if>
+        <if test="q.keyword != null">
+            AND (LOWER(COALESCE(r.name, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(g.course_type, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(a.area_name, '')) LIKE #{q.keyword}
+                 OR LOWER(IF(COALESCE(u.real_name, '') = '', COALESCE(u.nickname, ''), u.real_name)) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(u.mobile, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(st.name, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(a.phone, '')) LIKE #{q.keyword}
+                 OR LOWER(COALESCE(a.note, '')) LIKE #{q.keyword})
+        </if>
+    </sql>
+
+    <select id="pageClassApplyIds" resultType="java.lang.Integer">
+        SELECT a.id
+        <include refid="classApplyFromWhere"/>
+        ORDER BY a.create_time DESC, a.id DESC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <select id="countClassApply" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        <include refid="classApplyFromWhere"/>
+    </select>
+
+    <select id="summaryClassApply" resultType="java.util.LinkedHashMap">
+        SELECT
+            COUNT(*) AS total,
+            COUNT(DISTINCT CASE WHEN a.group_id &gt; 0 THEN a.group_id END) AS groupCount,
+            COUNT(DISTINCT CASE WHEN a.student_id &gt; 0 THEN a.student_id END) AS studentCount,
+            COALESCE(SUM(CASE WHEN (CASE WHEN g.id IS NOT NULL THEN COALESCE(g.status, '') ELSE COALESCE(a.status, '') END) = 'following' THEN 1 ELSE 0 END), 0) AS followingCount,
+            COALESCE(SUM(CASE WHEN (CASE WHEN g.id IS NOT NULL THEN COALESCE(g.status, '') ELSE COALESCE(a.status, '') END) = 'closed' THEN 1 ELSE 0 END), 0) AS closedCount,
+            COALESCE(SUM(CASE WHEN (CASE WHEN g.id IS NOT NULL THEN COALESCE(g.status, '') ELSE COALESCE(a.status, '') END) NOT IN ('following', 'closed') THEN 1 ELSE 0 END), 0) AS pendingCount
+        <include refid="classApplyFromWhere"/>
+    </select>
+
+</mapper>

@@ -1,0 +1,528 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mdd.admin.mapper.StatsQueryMapper">
+
+    <!--
+      T36 #106 数据统计（统计链公共骨架；#107 社区 / #108 小区 / #109 老板视角复用本文件）。
+      口径纪律：
+        - 订单口径 pay_status=1 AND delete_time IS NULL AND (refund_status<>1 OR refund_status IS NULL)；
+        - 营业额 SUM(order_amount) 实付，不叠加券抵扣，不做二次分配；
+        - 营业额与消课分别聚合，禁止同一条 GROUP BY 里 JOIN（×N 放大）；
+        - 社区归属 COALESCE(NULLIF(c.community_id,0), a.community_id, 0)，0 = 未归属；
+        - 对象存量数量与时间无关，期间指标才受 startEpoch/endEpoch 限制。
+    -->
+
+    <!-- ============================================================ -->
+    <!-- 一级：对象数量 + 期间总览                                      -->
+    <!-- ============================================================ -->
+
+    <select id="objectCounts" resultType="java.util.LinkedHashMap">
+        SELECT
+            (SELECT COUNT(*) FROM la_instructor i
+              WHERE i.delete_time IS NULL) AS instructorCount,
+            (SELECT COUNT(*) FROM la_course_class c
+              WHERE c.is_delete = 0) AS coursePackCount,
+            (SELECT COUNT(*) FROM la_course_class c
+              WHERE c.is_delete = 0 AND c.status = 1 AND c.is_show = 1) AS coursePackOnSaleCount,
+            (SELECT COUNT(*) FROM la_community comm
+              WHERE comm.delete_time IS NULL) AS communityCount,
+            (SELECT COUNT(*) FROM la_area a
+              WHERE a.delete_time IS NULL) AS areaCount
+    </select>
+
+    <!-- 四条独立聚合：订单 / 营业额 / 上课数 / 服务人次。
+         故意不写进一条 JOIN，避免订单金额随消课流水行数重复累加（#106 硬约束）。 -->
+    <select id="periodSummary" resultType="java.util.LinkedHashMap">
+        SELECT
+            (SELECT COUNT(*)
+               FROM la_recharge_order o
+              WHERE o.pay_status = 1
+                AND o.delete_time IS NULL
+                AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+                AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            ) AS orderCount,
+            (SELECT ROUND(COALESCE(SUM(o.order_amount), 0), 2)
+               FROM la_recharge_order o
+              WHERE o.pay_status = 1
+                AND o.delete_time IS NULL
+                AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+                AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            ) AS revenue,
+            (SELECT COUNT(DISTINCT CONCAT(cl.course_class_id, '-', cl.lesson_no))
+               FROM la_course_consume_log cl
+               JOIN la_course_class c ON c.id = cl.course_class_id AND c.is_delete = 0
+               LEFT JOIN la_area a ON a.id = c.area_id AND a.delete_time IS NULL
+              WHERE cl.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+                <include refid="dimensionFilters"/>
+            ) AS lessonCount,
+            (SELECT COUNT(*)
+               FROM la_course_consume_log cl
+               JOIN la_course_class c ON c.id = cl.course_class_id AND c.is_delete = 0
+               LEFT JOIN la_area a ON a.id = c.area_id AND a.delete_time IS NULL
+              WHERE cl.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+                <include refid="dimensionFilters"/>
+            ) AS servicePersons
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 二级：营业额按日趋势（默认近 30 天）                            -->
+    <!-- ============================================================ -->
+
+    <select id="trendRows" resultType="java.util.LinkedHashMap">
+        SELECT
+            DATE_FORMAT(FROM_UNIXTIME(o.pay_time), '%Y-%m-%d') AS date,
+            COUNT(*) AS orderCount,
+            ROUND(COALESCE(SUM(o.order_amount), 0), 2) AS revenue
+        FROM la_recharge_order o
+        WHERE o.pay_status = 1
+          AND o.delete_time IS NULL
+          AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+          AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+        GROUP BY DATE_FORMAT(FROM_UNIXTIME(o.pay_time), '%Y-%m-%d')
+        ORDER BY date ASC
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 三级：订单 / 课节明细（维度下钻公共层，#107/#108/#109 复用）      -->
+    <!-- ============================================================ -->
+
+    <sql id="dimensionFilters">
+        <if test="q.instructorId != null">
+            AND c.instructor_id = #{q.instructorId}
+        </if>
+        <if test="q.courseClassId != null">
+            AND c.id = #{q.courseClassId}
+        </if>
+        <if test="q.communityId != null">
+            AND COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) = #{q.communityId}
+        </if>
+        <if test="q.areaId != null">
+            AND COALESCE(c.area_id, 0) = #{q.areaId}
+        </if>
+    </sql>
+
+    <sql id="orderFromWhere">
+        FROM la_recharge_order o
+        LEFT JOIN la_course_class c ON c.id = o.course_class_id AND c.is_delete = 0
+        LEFT JOIN la_area a ON a.id = c.area_id AND a.delete_time IS NULL
+        LEFT JOIN la_community comm ON comm.id = COALESCE(NULLIF(c.community_id, 0), a.community_id)
+        LEFT JOIN la_instructor ins ON ins.id = c.instructor_id
+        LEFT JOIN la_student s ON s.id = o.student_id
+        WHERE o.pay_status = 1
+          AND o.delete_time IS NULL
+          AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+          AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+        <if test="q.instructorId != null">
+            AND c.instructor_id = #{q.instructorId}
+        </if>
+        <if test="q.courseClassId != null">
+            AND o.course_class_id = #{q.courseClassId}
+        </if>
+        <if test="q.communityId != null">
+            AND COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) = #{q.communityId}
+        </if>
+        <if test="q.areaId != null">
+            AND COALESCE(c.area_id, 0) = #{q.areaId}
+        </if>
+        <if test="q.keyword != null">
+            AND (o.sn LIKE #{q.keyword}
+                 OR c.name LIKE #{q.keyword}
+                 OR s.name LIKE #{q.keyword})
+        </if>
+    </sql>
+
+    <select id="countOrders" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        <include refid="orderFromWhere"/>
+    </select>
+
+    <select id="pageOrders" resultType="java.util.LinkedHashMap">
+        SELECT
+            o.id AS orderId,
+            COALESCE(o.sn, '') AS sn,
+            COALESCE(o.course_class_id, 0) AS courseClassId,
+            COALESCE(c.name, '') AS courseName,
+            COALESCE(c.instructor_id, 0) AS instructorId,
+            COALESCE(ins.name, '') AS instructorName,
+            COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) AS communityId,
+            COALESCE(comm.name, '') AS communityName,
+            COALESCE(c.area_id, 0) AS areaId,
+            COALESCE(a.name, '') AS areaName,
+            COALESCE(o.student_id, 0) AS studentId,
+            COALESCE(s.name, '') AS studentName,
+            COALESCE(o.lesson_count, 0) AS lessonCount,
+            ROUND(COALESCE(o.order_amount, 0), 2) AS orderAmount,
+            o.pay_time AS payTime
+        <include refid="orderFromWhere"/>
+        ORDER BY o.pay_time DESC, o.id DESC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <sql id="lessonFromWhere">
+        FROM la_course_consume_log cl
+        JOIN la_course_class c ON c.id = cl.course_class_id AND c.is_delete = 0
+        LEFT JOIN la_area a ON a.id = c.area_id AND a.delete_time IS NULL
+        LEFT JOIN la_community comm ON comm.id = COALESCE(NULLIF(c.community_id, 0), a.community_id)
+        LEFT JOIN la_instructor ins ON ins.id = c.instructor_id
+        WHERE cl.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+        <if test="q.instructorId != null">
+            AND c.instructor_id = #{q.instructorId}
+        </if>
+        <if test="q.courseClassId != null">
+            AND cl.course_class_id = #{q.courseClassId}
+        </if>
+        <if test="q.communityId != null">
+            AND COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) = #{q.communityId}
+        </if>
+        <if test="q.areaId != null">
+            AND COALESCE(c.area_id, 0) = #{q.areaId}
+        </if>
+        <if test="q.keyword != null">
+            AND c.name LIKE #{q.keyword}
+        </if>
+    </sql>
+
+    <select id="countLessons" resultType="java.lang.Long">
+        SELECT COUNT(*) FROM (
+            SELECT cl.course_class_id, cl.lesson_no
+            <include refid="lessonFromWhere"/>
+            GROUP BY cl.course_class_id, cl.lesson_no
+        ) t
+    </select>
+
+    <select id="pageLessons" resultType="java.util.LinkedHashMap">
+        SELECT
+            cl.course_class_id AS courseClassId,
+            COALESCE(c.name, '') AS courseName,
+            COALESCE(c.instructor_id, 0) AS instructorId,
+            COALESCE(ins.name, '') AS instructorName,
+            COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) AS communityId,
+            COALESCE(comm.name, '') AS communityName,
+            COALESCE(c.area_id, 0) AS areaId,
+            COALESCE(a.name, '') AS areaName,
+            cl.lesson_no AS lessonNo,
+            COUNT(*) AS servicePersons,
+            MAX(cl.create_time) AS lastConsumeTime
+        <include refid="lessonFromWhere"/>
+        GROUP BY cl.course_class_id, cl.lesson_no, c.name, c.instructor_id, ins.name,
+                 c.community_id, a.community_id, comm.name, c.area_id, a.name
+        ORDER BY cl.course_class_id ASC, cl.lesson_no ASC
+        LIMIT #{q.offset}, #{q.limit}
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 维度聚合：社区（#107；#108 小区同构，只换分组键）                 -->
+    <!-- ============================================================ -->
+
+    <!--
+      社区归属键：班级填了社区就用班级的，否则用班级所属小区反查社区，两者都缺归 0（「未归属」）。
+      订单与消课分两条聚合（UNION ALL），再按同一个键合并 —— 禁止在同一条 GROUP BY 里 JOIN
+      订单与消课流水，否则 SUM(order_amount) 会随流水行数重复累加（#107 硬约束）。
+    -->
+    <sql id="communityAggregate">
+        SELECT t.community_id AS communityId,
+               SUM(t.orderCount) AS orderCount,
+               SUM(t.revenue) AS revenue,
+               SUM(t.attends) AS attends
+        FROM (
+            SELECT COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) AS community_id,
+                   COUNT(*) AS orderCount,
+                   COALESCE(SUM(o.order_amount), 0) AS revenue,
+                   0 AS attends
+            FROM la_recharge_order o
+            LEFT JOIN la_course_class c ON c.id = o.course_class_id AND c.is_delete = 0
+            LEFT JOIN la_area a ON a.id = c.area_id AND a.delete_time IS NULL
+            WHERE o.pay_status = 1
+              AND o.delete_time IS NULL
+              AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+              AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+              <if test="q.communityId != null">
+                  AND COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) = #{q.communityId}
+              </if>
+              <if test="q.areaId != null">
+                  AND COALESCE(c.area_id, 0) = #{q.areaId}
+              </if>
+              <if test="q.instructorId != null">
+                  AND c.instructor_id = #{q.instructorId}
+              </if>
+              <if test="q.courseClassId != null">
+                  AND o.course_class_id = #{q.courseClassId}
+              </if>
+            GROUP BY COALESCE(NULLIF(c.community_id, 0), a.community_id, 0)
+            UNION ALL
+            SELECT COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) AS community_id,
+                   0 AS orderCount,
+                   0 AS revenue,
+                   COUNT(*) AS attends
+            FROM la_course_consume_log cl
+            JOIN la_course_class c ON c.id = cl.course_class_id AND c.is_delete = 0
+            LEFT JOIN la_area a ON a.id = c.area_id AND a.delete_time IS NULL
+            WHERE cl.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+              <if test="q.communityId != null">
+                  AND COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) = #{q.communityId}
+              </if>
+              <if test="q.areaId != null">
+                  AND COALESCE(c.area_id, 0) = #{q.areaId}
+              </if>
+              <if test="q.instructorId != null">
+                  AND c.instructor_id = #{q.instructorId}
+              </if>
+              <if test="q.courseClassId != null">
+                  AND cl.course_class_id = #{q.courseClassId}
+              </if>
+            GROUP BY COALESCE(NULLIF(c.community_id, 0), a.community_id, 0)
+        ) t
+        GROUP BY t.community_id
+    </sql>
+
+    <select id="communityStats" resultType="java.util.LinkedHashMap">
+        SELECT
+            b.communityId AS communityId,
+            COALESCE(comm.name, '') AS communityName,
+            COALESCE(g.orderCount, 0) AS orderCount,
+            ROUND(COALESCE(g.revenue, 0), 2) AS revenue,
+            COALESCE(g.attends, 0) AS attends
+        FROM (
+            <choose>
+                <when test="q.communityId == null and q.areaId == null
+                            and q.instructorId == null and q.courseClassId == null">
+                    SELECT comm.id AS communityId
+                    FROM la_community comm
+                    WHERE comm.delete_time IS NULL
+                    UNION
+                </when>
+                <otherwise/>
+            </choose>
+            SELECT a.communityId AS communityId
+            FROM (<include refid="communityAggregate"/>) a
+        ) b
+        LEFT JOIN la_community comm ON comm.id = b.communityId AND comm.delete_time IS NULL
+        LEFT JOIN (<include refid="communityAggregate"/>) g ON g.communityId = b.communityId
+        ORDER BY revenue DESC, orderCount DESC, b.communityId ASC
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 三级：小区维度（#108）                                        -->
+    <!-- ============================================================ -->
+
+    <!--
+      小区归属键：COALESCE(class.area_id, 0)，0 = 「未归属」。
+      与社区维度同构：订单与消课分两条聚合（UNION ALL）后按同一个键合并，
+      禁止在同一条 GROUP BY 里 JOIN 订单与流水（会按流水行数放大营业额外）。
+      la_area 只用于「社区筛选」与「名称回填」，不参与分组键计算。
+    -->
+    <sql id="areaAggregate">
+        SELECT t.area_id AS areaId,
+               SUM(t.orderCount) AS orderCount,
+               SUM(t.revenue) AS revenue,
+               SUM(t.attends) AS attends
+        FROM (
+            SELECT COALESCE(c.area_id, 0) AS area_id,
+                   COUNT(*) AS orderCount,
+                   COALESCE(SUM(o.order_amount), 0) AS revenue,
+                   0 AS attends
+            FROM la_recharge_order o
+            LEFT JOIN la_course_class c ON c.id = o.course_class_id AND c.is_delete = 0
+            LEFT JOIN la_area a ON a.id = c.area_id AND a.delete_time IS NULL
+            WHERE o.pay_status = 1
+              AND o.delete_time IS NULL
+              AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+              AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+              <if test="q.areaId != null">
+                  AND COALESCE(c.area_id, 0) = #{q.areaId}
+              </if>
+              <if test="q.communityId != null">
+                  AND COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) = #{q.communityId}
+              </if>
+              <if test="q.instructorId != null">
+                  AND c.instructor_id = #{q.instructorId}
+              </if>
+              <if test="q.courseClassId != null">
+                  AND o.course_class_id = #{q.courseClassId}
+              </if>
+            GROUP BY COALESCE(c.area_id, 0)
+            UNION ALL
+            SELECT COALESCE(c.area_id, 0) AS area_id,
+                   0 AS orderCount,
+                   0 AS revenue,
+                   COUNT(*) AS attends
+            FROM la_course_consume_log cl
+            JOIN la_course_class c ON c.id = cl.course_class_id AND c.is_delete = 0
+            LEFT JOIN la_area a ON a.id = c.area_id AND a.delete_time IS NULL
+            WHERE cl.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+              <if test="q.areaId != null">
+                  AND COALESCE(c.area_id, 0) = #{q.areaId}
+              </if>
+              <if test="q.communityId != null">
+                  AND COALESCE(NULLIF(c.community_id, 0), a.community_id, 0) = #{q.communityId}
+              </if>
+              <if test="q.instructorId != null">
+                  AND c.instructor_id = #{q.instructorId}
+              </if>
+              <if test="q.courseClassId != null">
+                  AND cl.course_class_id = #{q.courseClassId}
+              </if>
+            GROUP BY COALESCE(c.area_id, 0)
+        ) t
+        GROUP BY t.area_id
+    </sql>
+
+    <select id="areaStats" resultType="java.util.LinkedHashMap">
+        SELECT
+            b.areaId AS areaId,
+            COALESCE(ar.name, '') AS areaName,
+            COALESCE(g.orderCount, 0) AS orderCount,
+            ROUND(COALESCE(g.revenue, 0), 2) AS revenue,
+            COALESCE(g.attends, 0) AS attends
+        FROM (
+            <choose>
+                <when test="q.areaId == null and q.communityId == null
+                            and q.instructorId == null and q.courseClassId == null">
+                    SELECT ar2.id AS areaId
+                    FROM la_area ar2
+                    WHERE ar2.delete_time IS NULL
+                    UNION
+                </when>
+                <otherwise/>
+            </choose>
+            SELECT a.areaId AS areaId
+            FROM (<include refid="areaAggregate"/>) a
+        ) b
+        LEFT JOIN la_area ar ON ar.id = b.areaId AND ar.delete_time IS NULL
+        LEFT JOIN (<include refid="areaAggregate"/>) g ON g.areaId = b.areaId
+        ORDER BY revenue DESC, orderCount DESC, b.areaId ASC
+    </select>
+
+    <!-- ============================================================ -->
+    <!-- 老板视角（#109）：片区覆盖 / 课程构成 / 课程包销量                 -->
+    <!-- ============================================================ -->
+
+    <!--
+      片区节点：la_region.level=2（分区）即老板口径的「片区」。
+      社区表的 region_id 指向 level=3 街道，Service 用 communityRegionRows 反查父分区；
+      level/status 不写死在两侧，避免口径分叉。
+    -->
+    <select id="regionNodes" resultType="java.util.LinkedHashMap">
+        SELECT r.id AS regionId,
+               COALESCE(r.name, '') AS regionName,
+               COALESCE(p.name, '') AS cityName,
+               COALESCE(r.sort, 0) AS sort
+        FROM la_region r
+        LEFT JOIN la_region p ON p.id = r.parent_id AND p.delete_time IS NULL
+        WHERE r.level = 2
+          AND r.delete_time IS NULL
+        ORDER BY r.sort ASC, r.id ASC
+    </select>
+
+    <!-- 社区 → 区划（街道 level=3 / 分区 level=2）：只用于把社区聚合结果上卷到片区，不改社区口径。 -->
+    <select id="communityRegionRows" resultType="java.util.LinkedHashMap">
+        SELECT c.id AS communityId,
+               COALESCE(c.name, '') AS communityName,
+               COALESCE(c.region_id, 0) AS regionId,
+               COALESCE(r.level, 0) AS regionLevel,
+               COALESCE(r.parent_id, 0) AS parentRegionId
+        FROM la_community c
+        LEFT JOIN la_region r ON r.id = c.region_id AND r.delete_time IS NULL
+        WHERE c.delete_time IS NULL
+        ORDER BY c.id ASC
+    </select>
+
+    <!--
+      课程构成：按 课程班级 + 类目 聚合期间订单（订单口径与 #106/#107/#108 完全一致）。
+      班级已删除/缺失（course_class_id=0）的订单归 0 号行，Service 显示「未归属」，
+      保证「行合计 == 总览」不被静默丢弃。
+    -->
+    <select id="courseMixRows" resultType="java.util.LinkedHashMap">
+        SELECT COALESCE(c.id, 0) AS courseClassId,
+               COALESCE(c.name, '') AS courseName,
+               COALESCE(cat.id, 0) AS categoryId,
+               COALESCE(cat.name, '') AS categoryName,
+               COUNT(*) AS orderCount,
+               ROUND(COALESCE(SUM(o.order_amount), 0), 2) AS revenue
+        FROM la_recharge_order o
+        LEFT JOIN la_course_class c ON c.id = o.course_class_id AND c.is_delete = 0
+        LEFT JOIN la_sports_category cat ON cat.id = c.category_id
+        WHERE o.pay_status = 1
+          AND o.delete_time IS NULL
+          AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+          AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+        GROUP BY COALESCE(c.id, 0), COALESCE(c.name, ''), COALESCE(cat.id, 0), COALESCE(cat.name, '')
+        ORDER BY revenue DESC, orderCount DESC, courseClassId ASC
+    </select>
+
+    <!--
+      课程包销量：购买数 / 金额 / 报名数。
+        - 购买数 = COUNT(DISTINCT la_user_course.id)，按 create_time 归期；
+        - 报名数 = COUNT(DISTINCT la_user_course.user_id)，即「有多少人报名了这个包」；
+        - 金额   = SUM(la_recharge_order.order_amount)（已支付未退款），按 pay_time 归期。
+      购买与订单各自先聚合再 JOIN（禁止同一条 GROUP BY 里 JOIN 两张明细表，会 ×N 放大金额）；
+      键集合 = 购买记录 ∪ 期间订单，班级已删除/缺失的键归 0 号行（「未归属」显式成行）。
+    -->
+    <select id="coursePackRows" resultType="java.util.LinkedHashMap">
+        SELECT COALESCE(c.id, 0) AS coursePackId,
+               COALESCE(c.name, '') AS coursePackName,
+               COALESCE(cat.name, '') AS categoryName,
+               COALESCE(SUM(p.purchases), 0) AS purchases,
+               COALESCE(SUM(p.buyers), 0) AS enrollCount,
+               COALESCE(SUM(o.orderCount), 0) AS orderCount,
+               ROUND(COALESCE(SUM(o.revenue), 0), 2) AS revenue
+        FROM (
+            SELECT uc.course_class_id AS classId
+            FROM la_user_course uc
+            WHERE uc.delete_time IS NULL
+              AND uc.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            GROUP BY uc.course_class_id
+            UNION
+            SELECT o2.course_class_id AS classId
+            FROM la_recharge_order o2
+            WHERE o2.pay_status = 1
+              AND o2.delete_time IS NULL
+              AND (o2.refund_status &lt;&gt; 1 OR o2.refund_status IS NULL)
+              AND o2.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            GROUP BY o2.course_class_id
+        ) k
+        LEFT JOIN la_course_class c ON c.id = k.classId AND c.is_delete = 0
+        LEFT JOIN la_sports_category cat ON cat.id = c.category_id
+        LEFT JOIN (
+            SELECT uc.course_class_id AS classId,
+                   COUNT(DISTINCT uc.id) AS purchases,
+                   COUNT(DISTINCT uc.user_id) AS buyers
+            FROM la_user_course uc
+            WHERE uc.delete_time IS NULL
+              AND uc.create_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            GROUP BY uc.course_class_id
+        ) p ON p.classId = k.classId
+        LEFT JOIN (
+            SELECT o2.course_class_id AS classId,
+                   COUNT(*) AS orderCount,
+                   SUM(o2.order_amount) AS revenue
+            FROM la_recharge_order o2
+            WHERE o2.pay_status = 1
+              AND o2.delete_time IS NULL
+              AND (o2.refund_status &lt;&gt; 1 OR o2.refund_status IS NULL)
+              AND o2.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+            GROUP BY o2.course_class_id
+        ) o ON o.classId = k.classId
+        GROUP BY COALESCE(c.id, 0), COALESCE(c.name, ''), COALESCE(cat.name, '')
+        HAVING purchases &gt; 0 OR revenue &gt; 0
+        ORDER BY revenue DESC, purchases DESC, coursePackId ASC
+    </select>
+
+    <!--
+      期间内「无有效课程班级」的订单（course_class_id=0 / 班级已删除 / 班级不存在）：
+      教练维度（#102 从班级侧聚合）天然覆盖不到这些单，老板视角用它补出「未分配教练」残差行，
+      使 owner/instructorTop 行合计与 overview 完全相等（差异显式成行，不丢弃）。
+    -->
+    <select id="orphanOrders" resultType="java.util.LinkedHashMap">
+        SELECT COUNT(*) AS orderCount,
+               ROUND(COALESCE(SUM(o.order_amount), 0), 2) AS revenue
+        FROM la_recharge_order o
+        LEFT JOIN la_course_class c ON c.id = o.course_class_id AND c.is_delete = 0
+        WHERE o.pay_status = 1
+          AND o.delete_time IS NULL
+          AND (o.refund_status &lt;&gt; 1 OR o.refund_status IS NULL)
+          AND o.pay_time BETWEEN #{q.startEpoch} AND #{q.endEpoch}
+          AND c.id IS NULL
+    </select>
+
+</mapper>

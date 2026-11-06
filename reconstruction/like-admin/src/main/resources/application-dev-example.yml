@@ -1,0 +1,138 @@
+# like-admin 本地开发配置示例（复制为 config/application-dev.yml，或按 README「打包前生成 application.yml」使用）
+#
+# 本文件必须自带以下两类「无缺省值」的键，否则 like-admin 启动即失败（#54）：
+#   1. like.swagger.enabled / like.swagger.pathMapping —— SwaggerConfig 用 @Value 读取且无默认值；
+#   2. spring.main.allow-circular-references: true —— 上游 adminServiceImpl <-> authServiceImpl
+#      构造期循环依赖，Spring Boot 2.6+ 默认禁止（APPLICATION FAILED TO START）。
+# 另外 spring.mvc.pathmatch.matching-strategy=ant_path_matcher 是 Springfox 在 Spring Boot 2.6+
+# 下能启动的前提，缺省会导致 documentationPluginsBootstrapper 启动失败。
+#
+# 注意：本文件不含任何真实凭据；口令/密钥请由环境变量或本机 config 覆盖，不要提交。
+
+# 项目配置
+like:
+  url: http://127.0.0.1:8082 # 对外访问基址（拼接上传文件绝对地址）
+  front-url: http://127.0.0.1:8083 # 小程序端服务基址（渠道/装修配置回填）
+  upload-directory: /www/uploads/likeadmin-java/ # 上传目录
+  # 是否演示环境：true 时后台所有 POST 被拒绝，本地务必 false
+  production: false
+  # 调试开关（GlobalConfig.debug）：缺省 false；生产必须保持 false，本地排查可设为 true。
+  # 该开关只影响本地调试行为，异常响应始终已脱敏。
+  debug: true
+  # 报表/导出上限（#66）：超过上限返回明确业务错误，避免 OOM 或超大文件。
+  # 行数按导出总行数校验；文件大小在写完后校验，超限会删除临时文件并报错。
+  report:
+    export-max-rows: 50000
+    export-max-file-size-mb: 20
+  # 退款 outbox 执行器（#60/#124）：true 时用 MockRefundTaskExecutor 替代真实微信退款，
+  # 只能在测试 profile（dev/test/local）下打开；生产/体验误开会被 RuntimeModeGuard
+  # 直接阻断启动。默认 false。
+  refund:
+    mock-enabled: false
+  # 密码加盐（ToolUtils.makePassword）。NULL 与空串会产生不同摘要：
+  # 迁移老库时必须与老服务器 application.yml 完全一致；本地新库留空（不配置）即可。
+  # unique-identification: "${APP_UNIQUE_IDENTIFICATION}"
+  login:
+    timeout: 2592000
+  captcha:
+    # 是否开启验证码；本地可设 false 方便联调
+    status: true
+    # 验证码有效时长（秒）
+    expire: 120
+    # 验证码缓存键名
+    token: "captcha:key:"
+  # Swagger 配置（SwaggerConfig @Value 必填，缺任一项启动失败）
+  swagger:
+    enabled: true
+    pathMapping: /dev-api
+  # 教练首次开号默认口令（未配置时服务端有内置策略，见 InstructorAccountServiceImpl）
+  # instructor:
+  #   initial-password: "<本地测试口令>"
+  # 分账数据上报适配器：默认关闭，不影响订单/支付/消课主流程。
+  # 环境变量：LIKE_SETTLEMENT_ENABLED / LIKE_SETTLEMENT_MODE / LIKE_SETTLEMENT_ENDPOINT /
+  #          LIKE_SETTLEMENT_APP_ID / LIKE_SETTLEMENT_SECRET 等，详见 docs/settlement/对接手册.md。
+  settlement:
+    enabled: ${LIKE_SETTLEMENT_ENABLED:false}
+    mode: ${LIKE_SETTLEMENT_MODE:stub}
+    endpoint: ${LIKE_SETTLEMENT_ENDPOINT:}
+    app-id: ${LIKE_SETTLEMENT_APP_ID:}
+    secret: ${LIKE_SETTLEMENT_SECRET:}
+    connect-timeout-ms: ${LIKE_SETTLEMENT_CONNECT_TIMEOUT_MS:3000}
+    read-timeout-ms: ${LIKE_SETTLEMENT_READ_TIMEOUT_MS:5000}
+    max-attempts: ${LIKE_SETTLEMENT_MAX_ATTEMPTS:3}
+    retry-backoff-ms: ${LIKE_SETTLEMENT_RETRY_BACKOFF_MS:500}
+    max-retry-backoff-ms: ${LIKE_SETTLEMENT_MAX_RETRY_BACKOFF_MS:8000}
+    timestamp-tolerance-seconds: ${LIKE_SETTLEMENT_TIMESTAMP_TOLERANCE_SECONDS:300}
+    verify-response-signature: ${LIKE_SETTLEMENT_VERIFY_RESPONSE_SIGNATURE:true}
+
+# 服务配置
+server:
+  port: 8082
+  servlet:
+    context-path: /
+
+# 框架配置
+spring:
+  # 上游 likeadmin 的 adminServiceImpl <-> authServiceImpl 存在构造期循环依赖，
+  # Spring Boot 2.6+ 默认禁止循环引用，缺该项时 like-admin 启动即失败（#54）。
+  main:
+    allow-circular-references: true
+  mvc:
+    static-path-pattern: /adminapi/static/**
+    throw-exception-if-no-handler-found: true
+    pathmatch:
+      # Springfox(swagger) 在 Spring Boot 2.6+ 必配 ant_path_matcher，否则启动失败
+      matching-strategy: ant_path_matcher
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+      enabled: true
+  # 数据源配置
+  datasource:
+    url: jdbc:mysql://localhost:3306/【库名称】?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&useSSL=false&serverTimezone=Asia/Shanghai
+    type: com.zaxxer.hikari.HikariDataSource # 数据源类型
+    driver-class-name: com.mysql.jdbc.Driver # MySql的驱动
+    username: root # 数据库账号
+    password: root # 数据库密码（本地测试值，不要提交真实口令）
+    hikari:
+      connection-timeout: 30000
+      minimum-idle: 5
+      maximum-pool-size: 20
+      auto-commit: true
+      idle-timeout: 600000
+      pool-name: DateSourceHikariCP
+      max-lifetime: 1800000
+      connection-init-sql: SELECT 1
+  # Redis配置
+  redis:
+    host: localhost   # Redis服务地址
+    port: 6379        # Redis端口
+    password:         # Redis密码
+    database: 0       # 数据库索引
+    timeout: 5000
+
+# Mybatis-plus配置
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**Mapper.xml
+  typeAliasesPackage: com.mdd.**.mapper
+  global-config:
+    banner: false
+    db-config:
+      table-prefix: la_
+  configuration-properties:
+    prefix: la_
+# 【是否开启SQL日志输出】
+#  configuration:
+#    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+# Sa-token配置（后台前端请求头使用 token）
+sa-token:
+  token-name: token
+  timeout: 2592000
+  activity-timeout: -1
+  is-concurrent: true
+  is-share: false
+  token-style: random-64
+  is-print: false
+  is-log: false

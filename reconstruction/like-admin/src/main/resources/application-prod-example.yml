@@ -1,0 +1,39 @@
+# 生产安全基线示例
+#
+# 文件名中的 prod-example 不是 Spring profile，不会自动加载，避免误用。
+# 部署时请把需要的项合并到部署目录的 config/application.yml（或容器挂载的配置）。
+# 完整生产配置以 T30.10 的 deploy/config/*.template 为准。
+
+like:
+  # 生产必须关闭调试；代码缺省也是 false，这里显式声明便于审计。
+  debug: false
+  # Swagger 文档生产必须关闭（#149）：SwaggerConfig 默认 disabled Docket，/v3/api-docs 404；
+  # 显式写键便于审计，也防止打包进 jar 的 application.yml 带了 true 时无覆盖。
+  swagger:
+    enabled: false
+    pathMapping: ""
+  # 报表/导出上限（#66）：超过上限返回明确业务错误，避免 OOM 或超大文件。
+  # 行数按导出总行数校验；文件大小在写完后校验，超限会删除临时文件并报错。
+  report:
+    export-max-rows: 50000
+    export-max-file-size-mb: 20
+  # 分账数据上报：默认关闭。甲方提供社区系统地址/AppId/签名密钥后，通过环境变量开启；
+  # 不要把真实 secret 写进本文件或 Git。字段说明见 docs/settlement/对接手册.md。
+  settlement:
+    enabled: ${LIKE_SETTLEMENT_ENABLED:false}
+    mode: ${LIKE_SETTLEMENT_MODE:stub}
+    endpoint: ${LIKE_SETTLEMENT_ENDPOINT:}
+    app-id: ${LIKE_SETTLEMENT_APP_ID:}
+    secret: ${LIKE_SETTLEMENT_SECRET:}
+    connect-timeout-ms: ${LIKE_SETTLEMENT_CONNECT_TIMEOUT_MS:3000}
+    read-timeout-ms: ${LIKE_SETTLEMENT_READ_TIMEOUT_MS:5000}
+    max-attempts: ${LIKE_SETTLEMENT_MAX_ATTEMPTS:3}
+    retry-backoff-ms: ${LIKE_SETTLEMENT_RETRY_BACKOFF_MS:500}
+    max-retry-backoff-ms: ${LIKE_SETTLEMENT_MAX_RETRY_BACKOFF_MS:8000}
+    timestamp-tolerance-seconds: ${LIKE_SETTLEMENT_TIMESTAMP_TOLERANCE_SECONDS:300}
+    verify-response-signature: ${LIKE_SETTLEMENT_VERIFY_RESPONSE_SIGNATURE:true}
+
+spring:
+  devtools:
+    restart:
+      enabled: false
