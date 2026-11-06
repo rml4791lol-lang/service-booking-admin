@@ -52,6 +52,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Assert;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.mdd.admin.service.IUserService;
+import com.mdd.admin.export.ExportFileService;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.admin.validate.user.UserAddValidate;
 import com.mdd.admin.validate.user.UserSearchValidate;
@@ -127,6 +128,8 @@ implements IUserService {
     CouponGoodsMapper couponGoodsMapper;
     @Resource
     CouponFlowMapper couponFlowMapper;
+    @Resource
+    ExportFileService exportFileService;
 
     public PageResult<UserVo> list(PageValidate pageValidate, UserSearchValidate searchValidate) {
         Integer pageNo = pageValidate.getPage_no();
@@ -331,7 +334,7 @@ implements IUserService {
         return ret;
     }
 
-    public String export(UserSearchValidate searchValidate) {
+    public Map<String, Object> export(UserSearchValidate searchValidate) {
         PageValidate pageValidate = new PageValidate();
         if (StringUtils.isNotNull(searchValidate.getPage_start())) {
             pageValidate.setPage_no(searchValidate.getPage_start());
@@ -346,21 +349,15 @@ implements IUserService {
         Boolean isAll = StringUtils.isNull(searchValidate.getPage_type()) || searchValidate.getPage_type().equals(0);
         ExportBundle bundle = this.getExcellist(isAll.booleanValue(), pageValidate, searchValidate);
         String fileName = ToolUtils.safeExportFileName(searchValidate.getFile_name());
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay((Long)(System.currentTimeMillis() / 1000L)) + "/";
-        String path = folderPath + fileName + ".xlsx";
-        String filePath = YmlUtils.get((String)"like.upload-directory") + path;
-        File folder = new File(YmlUtils.get((String)"like.upload-directory") + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("\u521b\u5efa\u6587\u4ef6\u5939\u5931\u8d25");
-        }
+        File target = exportFileService.allocate(fileName);
         // #168 双 sheet：主 sheet 用户记录（含未核销券金额），第二 sheet 券明细（老抵扣券 + 次数券）。
-        try (ExcelWriter writer = EasyExcel.write((String)filePath).excelType(ExcelTypeEnum.XLSX).build()) {
+        try (ExcelWriter writer = EasyExcel.write(target).excelType(ExcelTypeEnum.XLSX).build()) {
             writer.write((Collection)bundle.getUsers(),
                     EasyExcel.writerSheet((Integer)0).sheetName("\u7528\u6237\u8bb0\u5f55").head(UserListExportVo.class).build());
             writer.write((Collection)bundle.getDetails(),
                     EasyExcel.writerSheet((Integer)1).sheetName("\u5238\u660e\u7ec6").head(CouponDetailExportVo.class).build());
         }
-        return UrlUtils.toAdminAbsoluteUrl((String)path);
+        return exportFileService.issue(target, fileName + ".xlsx");
     }
 
     /**

@@ -7,17 +7,22 @@ import com.mdd.admin.LikeAdminThreadLocal;
 import com.mdd.admin.service.ICourseCheckinService;
 import com.mdd.admin.validate.checkin.CourseCheckinAuditSearchValidate;
 import com.mdd.admin.validate.checkin.CourseCheckinManualValidate;
+import com.mdd.admin.validate.checkin.CourseCheckinReverseValidate;
 import com.mdd.admin.validate.checkin.CourseCheckinSearchValidate;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.common.core.PageResult;
 import com.mdd.common.entity.Instructor;
 import com.mdd.common.entity.admin.Admin;
 import com.mdd.common.entity.community.Community;
+import com.mdd.common.entity.coupon.CouponFlow;
+import com.mdd.common.entity.coupon.CouponInstance;
 import com.mdd.common.entity.course.CourseBooking;
 import com.mdd.common.entity.course.CourseCheckinAudit;
 import com.mdd.common.entity.course.CourseClass;
+import com.mdd.common.entity.course.CourseConsumeLog;
 import com.mdd.common.entity.course.CourseLesson;
 import com.mdd.common.entity.course.CourseLessonLog;
+import com.mdd.common.entity.course.UserCourse;
 import com.mdd.common.entity.region.Area;
 import com.mdd.common.entity.student.Student;
 import com.mdd.common.entity.user.User;
@@ -25,16 +30,21 @@ import com.mdd.common.exception.OperateException;
 import com.mdd.common.mapper.InstructorMapper;
 import com.mdd.common.mapper.admin.AdminMapper;
 import com.mdd.common.mapper.community.CommunityMapper;
+import com.mdd.common.mapper.coupon.CouponFlowMapper;
+import com.mdd.common.mapper.coupon.CouponInstanceMapper;
 import com.mdd.common.mapper.course.CourseBookingMapper;
 import com.mdd.common.mapper.course.CourseCheckinAuditMapper;
+import com.mdd.common.mapper.course.CourseConsumeLogMapper;
 import com.mdd.common.mapper.course.CourseLessonLogMapper;
 import com.mdd.common.mapper.course.CourseLessonMapper;
 import com.mdd.common.mapper.course.CourseClassMapper;
+import com.mdd.common.mapper.course.UserCourseMapper;
 import com.mdd.common.mapper.region.AreaMapper;
 import com.mdd.common.mapper.student.StudentMapper;
 import com.mdd.common.mapper.user.UserMapper;
 import com.mdd.common.service.CourseAttendanceService;
 import com.mdd.common.service.CouponCheckinService;
+import com.mdd.common.service.PhotoAuthorizationService;
 import com.mdd.common.util.ClassScheduleUtil;
 import com.mdd.common.util.StringUtils;
 import com.mdd.common.util.UrlUtils;
@@ -70,10 +80,17 @@ public class CourseCheckinServiceImpl implements ICourseCheckinService {
 
     private static final int LESSON_FINISHED = 1;
     private static final int LESSON_CANCELLED = 2;
+    private static final int LESSON_OPEN = 0;
+    private static final int BOOKING_BOOKED = 1;
     private static final int BOOKING_ATTENDED = 10;
     private static final int BOOKING_CANCELLED = 3;
     private static final int MANUAL_SOURCE_TYPE = 2;
+    private static final int COUPON_STATUS_VALID = 1;
+    private static final int COUPON_FLOW_CONSUME = 2;
+    private static final int COUPON_FLOW_RETURN = 5;
     private static final int MAX_REASON_LENGTH = 500;
+    private static final String ACTION_MANUAL_CHECKIN = "manual_checkin";
+    private static final String ACTION_REVERSE_CHECKIN = "reverse_checkin";
     private static final String[] WEEK_CN = new String[]{"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
 
     @Resource
@@ -102,6 +119,16 @@ public class CourseCheckinServiceImpl implements ICourseCheckinService {
     CourseAttendanceService courseAttendanceService;
     @Resource
     CouponCheckinService couponCheckinService;
+    @Resource
+    PhotoAuthorizationService photoAuthorizationService;
+    @Resource
+    CouponInstanceMapper couponInstanceMapper;
+    @Resource
+    CouponFlowMapper couponFlowMapper;
+    @Resource
+    CourseConsumeLogMapper courseConsumeLogMapper;
+    @Resource
+    UserCourseMapper userCourseMapper;
 
     // ------------------------------------------------------------------
     // 列表
@@ -198,6 +225,14 @@ public class CourseCheckinServiceImpl implements ICourseCheckinService {
         List<CourseBooking> bookings = activeBookings(lesson.getId());
         Map<Integer, Student> students = studentsOf(bookings);
         Map<Integer, User> users = usersOf(bookings);
+        Set<Integer> rosterStudentIds = new LinkedHashSet<>();
+        for (CourseBooking booking : bookings) {
+            if (booking.getStudentId() != null && booking.getStudentId() > 0) {
+                rosterStudentIds.add(booking.getStudentId());
+            }
+        }
+        Map<Integer, Boolean> photoAuthorized = photoAuthorizationService
+                .authorizedByStudentIds(rosterStudentIds);
         List<Map<String, Object>> roster = new ArrayList<>();
         for (CourseBooking booking : bookings) {
             Student student = students.get(booking.getStudentId());
@@ -214,6 +249,7 @@ public class CourseCheckinServiceImpl implements ICourseCheckinService {
             item.put("status", booking.getStatus());
             item.put("statusText", bookingStatusText(booking.getStatus()));
             item.put("attended", booking.getStatus() != null && booking.getStatus() == BOOKING_ATTENDED);
+            item.put("photoAuthorized", Boolean.TRUE.equals(photoAuthorized.get(booking.getStudentId())));
             item.put("bookedAt", formatTime(booking.getCreateTime()));
             if (booking.getStatus() != null && booking.getStatus() == BOOKING_ATTENDED) {
                 item.put("coupon", null);
@@ -224,6 +260,7 @@ public class CourseCheckinServiceImpl implements ICourseCheckinService {
             roster.add(item);
         }
         session.put("roster", roster);
+        session.put("canReverse", lesson.getStatus() != null && lesson.getStatus() == LESSON_FINISHED);
         boolean canViewAudit = canViewAudit();
         session.put("canViewAudit", canViewAudit);
         session.put("audits", canViewAudit ? auditRows(new QueryWrapper<CourseCheckinAudit>()
@@ -424,7 +461,7 @@ public class CourseCheckinServiceImpl implements ICourseCheckinService {
             audit.setCourseName(nvl(courseClass.getName()));
             audit.setSessionDate(nvl(lesson.getLessonDate()));
             audit.setTimeSlot(time);
-            audit.setActionType("manual_checkin");
+            audit.setActionType(ACTION_MANUAL_CHECKIN);
             audit.setReason(reason);
             audit.setOperatorAdminId(adminId);
             audit.setOperatorName(operatorName);
@@ -466,6 +503,325 @@ public class CourseCheckinServiceImpl implements ICourseCheckinService {
         result.put("auditIds", auditIds);
         result.put("session", buildSession(lesson, courseClass, context));
         return result;
+    }
+
+    // ------------------------------------------------------------------
+    // 核销撤销
+    // ------------------------------------------------------------------
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> reverse(Integer adminId, CourseCheckinReverseValidate reverseValidate) {
+        if (adminId == null || adminId <= 0) {
+            throw new OperateException("请先登录管理员账号");
+        }
+        if (reverseValidate == null || reverseValidate.getLessonId() == null
+                || reverseValidate.getLessonId() <= 0) {
+            throw new OperateException("场次不存在");
+        }
+        String reason = reverseValidate.getReason() == null ? "" : reverseValidate.getReason().trim();
+        if (reason.isEmpty()) {
+            throw new OperateException("撤销原因不能为空");
+        }
+        if (reason.length() > MAX_REASON_LENGTH) {
+            throw new OperateException("撤销原因不能超过 " + MAX_REASON_LENGTH + " 字");
+        }
+
+        // 场次行锁：与核销入口同一把锁，撤销/补核销串行，避免并发重复退券。
+        CourseLesson lesson = courseLessonMapper.selectOne(new QueryWrapper<CourseLesson>()
+                .eq("id", reverseValidate.getLessonId())
+                .last("limit 1 for update"));
+        if (lesson == null) {
+            throw new OperateException("场次不存在");
+        }
+        CourseClass courseClass = courseClassMapper.selectById(lesson.getClassId());
+        if (courseClass == null || (courseClass.getIsDelete() != null && courseClass.getIsDelete() == 1)) {
+            throw new OperateException("课程不存在或已下架");
+        }
+        if (lesson.getStatus() == null || lesson.getStatus() != LESSON_FINISHED) {
+            throw new OperateException("该场次未核销或已撤销");
+        }
+
+        List<CourseBooking> bookings = activeBookings(lesson.getId());
+        Map<Integer, CourseBooking> bookingMap = new LinkedHashMap<>();
+        for (CourseBooking booking : bookings) {
+            if (booking.getStudentId() != null && booking.getStudentId() > 0) {
+                bookingMap.put(booking.getStudentId(), booking);
+            }
+        }
+        Map<Integer, Student> students = studentsOf(bookings);
+        Set<Integer> targetStudentIds = new LinkedHashSet<>();
+        List<Integer> requested = reverseValidate.getStudentIds();
+        if (requested != null && !requested.isEmpty()) {
+            for (Integer studentId : requested) {
+                if (studentId == null || studentId <= 0) {
+                    throw new OperateException("学员参数错误");
+                }
+                CourseBooking booking = bookingMap.get(studentId);
+                if (booking == null) {
+                    throw new OperateException("该学员不在本场次预约名单中");
+                }
+                if (booking.getStatus() == null || booking.getStatus() != BOOKING_ATTENDED) {
+                    throw new OperateException("学员" + studentName(students.get(studentId)) + "未核销或已撤销");
+                }
+                targetStudentIds.add(studentId);
+            }
+        } else {
+            for (CourseBooking booking : bookings) {
+                if (booking.getStatus() != null && booking.getStatus() == BOOKING_ATTENDED
+                        && booking.getStudentId() != null && booking.getStudentId() > 0) {
+                    targetStudentIds.add(booking.getStudentId());
+                }
+            }
+        }
+        if (targetStudentIds.isEmpty()) {
+            throw new OperateException("该场次未核销或已撤销");
+        }
+
+        Admin admin = adminMapper.selectById(adminId);
+        String operatorName = adminName(admin, adminId);
+        String time = resolveTime(lesson, courseClass);
+        String ref = trimRef(nvl(courseClass.getName()) + " " + nvl(lesson.getLessonDate()) + " " + time
+                + " 第" + (lesson.getLessonNo() == null ? 0 : lesson.getLessonNo()) + "节");
+        long nowMillis = System.currentTimeMillis();
+        int now = (int) (nowMillis / 1000L);
+
+        List<String> reversedStudentIds = new ArrayList<>();
+        List<Map<String, Object>> couponReturns = new ArrayList<>();
+        List<Map<String, Object>> lessonReturns = new ArrayList<>();
+        List<Integer> auditIds = new ArrayList<>();
+
+        for (Integer studentId : targetStudentIds) {
+            CourseBooking booking = bookingMap.get(studentId);
+            if (booking == null) {
+                continue;
+            }
+            Map<String, Object> couponReturn = returnCoupon(lesson, studentId, ref, reason, adminId, now);
+            Map<String, Object> lessonReturn = returnUserCourse(lesson, courseClass, studentId, now);
+
+            booking.setStatus(BOOKING_BOOKED);
+            booking.setUpdateTime((long) now);
+            courseBookingMapper.updateById(booking);
+
+            Student student = students.get(studentId);
+            CourseCheckinAudit audit = new CourseCheckinAudit();
+            audit.setSessionId(lesson.getId());
+            audit.setClassId(courseClass.getId());
+            audit.setLessonNo(lesson.getLessonNo() == null ? 0 : lesson.getLessonNo());
+            audit.setBookingId(booking.getId());
+            audit.setStudentId(studentId);
+            audit.setStudentName(studentName(student));
+            audit.setUserId(booking.getUserId());
+            audit.setCourseName(nvl(courseClass.getName()));
+            audit.setSessionDate(nvl(lesson.getLessonDate()));
+            audit.setTimeSlot(time);
+            audit.setActionType(ACTION_REVERSE_CHECKIN);
+            audit.setReason(reason);
+            audit.setOperatorAdminId(adminId);
+            audit.setOperatorName(operatorName);
+            audit.setBeforeStatus(BOOKING_ATTENDED);
+            audit.setAfterStatus(BOOKING_BOOKED);
+            if (couponReturn != null) {
+                audit.setDeducted(1);
+                audit.setCouponId(parseInt(couponReturn.get("couponId")));
+                audit.setCouponTitle(nvl((String) couponReturn.get("title")));
+                audit.setCouponRemaining(parseInt(couponReturn.get("after")));
+            } else {
+                audit.setDeducted(0);
+                audit.setCouponId(0);
+                audit.setCouponTitle("");
+                audit.setCouponRemaining(0);
+            }
+            audit.setDetail(reverseDetail(couponReturn, lessonReturn));
+            audit.setCreateTime(now);
+            courseCheckinAuditMapper.insert(audit);
+            auditIds.add(audit.getId());
+
+            reversedStudentIds.add(String.valueOf(studentId));
+            if (couponReturn != null) {
+                couponReturns.add(couponReturn);
+            }
+            if (lessonReturn != null) {
+                lessonReturns.add(lessonReturn);
+            }
+        }
+
+        // 全部已核销学员都撤销后场次回到未核销；部分撤销保持已核销，列表按「部分核销」展示剩余进度。
+        Long remainingAttended = courseBookingMapper.selectCount(new QueryWrapper<CourseBooking>()
+                .eq("lesson_id", lesson.getId())
+                .eq("status", BOOKING_ATTENDED));
+        boolean allReversed = remainingAttended == null || remainingAttended == 0L;
+        if (allReversed) {
+            lesson.setStatus(LESSON_OPEN);
+            lesson.setCoachCheckIn(0);
+        }
+        lesson.setUpdateTime(now);
+        courseLessonMapper.updateById(lesson);
+
+        CheckinContext context = buildContext(Collections.singletonList(lesson));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("ok", true);
+        result.put("lessonId", String.valueOf(lesson.getId()));
+        result.put("sessionId", String.valueOf(lesson.getId()));
+        result.put("count", reversedStudentIds.size());
+        result.put("reversedStudentIds", reversedStudentIds);
+        result.put("couponReturns", couponReturns);
+        result.put("lessonReturns", lessonReturns);
+        result.put("allReversed", allReversed);
+        result.put("lessonStatus", allReversed ? LESSON_OPEN : LESSON_FINISHED);
+        result.put("reason", reason);
+        result.put("auditIds", auditIds);
+        result.put("session", buildSession(lesson, courseClass, context));
+        return result;
+    }
+
+    /**
+     * 退回一次核销扣券：优先按人工补核销审计里的 coupon_id 定位原扣券流水，
+     * 教练核销没有审计时按课程+日期+时段+课节的 ref 定位；找不到流水则不退券。
+     */
+    private Map<String, Object> returnCoupon(CourseLesson lesson, Integer studentId, String ref,
+                                             String reason, Integer adminId, int now) {
+        CourseCheckinAudit sourceAudit = courseCheckinAuditMapper.selectOne(new QueryWrapper<CourseCheckinAudit>()
+                .eq("session_id", lesson.getId())
+                .eq("student_id", studentId)
+                .eq("action_type", ACTION_MANUAL_CHECKIN)
+                .eq("deducted", 1)
+                .orderByDesc("id")
+                .last("limit 1"));
+        CouponFlow consume = null;
+        if (sourceAudit != null && sourceAudit.getCouponId() != null && sourceAudit.getCouponId() > 0) {
+            if (StringUtils.isNotBlank(ref)) {
+                consume = couponFlowMapper.selectOne(new QueryWrapper<CouponFlow>()
+                        .eq("coupon_id", sourceAudit.getCouponId())
+                        .eq("student_id", studentId)
+                        .eq("type", COUPON_FLOW_CONSUME)
+                        .eq("ref", ref)
+                        .orderByDesc("id")
+                        .last("limit 1"));
+            }
+            if (consume == null) {
+                consume = couponFlowMapper.selectOne(new QueryWrapper<CouponFlow>()
+                        .eq("coupon_id", sourceAudit.getCouponId())
+                        .eq("student_id", studentId)
+                        .eq("type", COUPON_FLOW_CONSUME)
+                        .orderByDesc("id")
+                        .last("limit 1"));
+            }
+        }
+        if (consume == null && StringUtils.isNotBlank(ref)) {
+            consume = couponFlowMapper.selectOne(new QueryWrapper<CouponFlow>()
+                    .eq("student_id", studentId)
+                    .eq("type", COUPON_FLOW_CONSUME)
+                    .eq("ref", ref)
+                    .orderByDesc("id")
+                    .last("limit 1"));
+        }
+        if (consume == null || consume.getCouponId() == null || consume.getCouponId() <= 0) {
+            return null;
+        }
+        CouponInstance instance = couponInstanceMapper.selectOne(new QueryWrapper<CouponInstance>()
+                .eq("id", consume.getCouponId())
+                .last("limit 1 for update"));
+        if (instance == null) {
+            return null;
+        }
+        int before = instance.getRemaining() == null ? 0 : instance.getRemaining();
+        int after = before + 1;
+        instance.setRemaining(after);
+        // 撤销核销属于人工纠错，券恢复为有效；到期/作废状态由客服在券管理另行处理。
+        instance.setStatus(COUPON_STATUS_VALID);
+        instance.setUpdateTime((long) now);
+        couponInstanceMapper.updateById(instance);
+
+        CouponFlow flow = new CouponFlow();
+        flow.setCouponId(instance.getId());
+        flow.setUserId(consume.getUserId());
+        flow.setStudentId(studentId);
+        flow.setType(COUPON_FLOW_RETURN);
+        flow.setTimes(1);
+        flow.setBalance(after);
+        flow.setOrderId(consume.getOrderId());
+        flow.setOrderSn("");
+        flow.setRef(trimRef(consume.getRef() == null ? "" : consume.getRef()));
+        flow.setOperatorType("admin");
+        flow.setOperatorId(adminId);
+        flow.setRemark(trimRemark("撤销核销退回（原流水#" + consume.getId() + "）：" + reason));
+        flow.setCreateTime((long) now);
+        couponFlowMapper.insert(flow);
+
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("studentId", String.valueOf(studentId));
+        item.put("couponId", String.valueOf(instance.getId()));
+        item.put("title", nvl(instance.getTitle()));
+        item.put("before", before);
+        item.put("after", after);
+        item.put("consumeFlowId", consume.getId());
+        item.put("returnFlowId", flow.getId());
+        return item;
+    }
+
+    /**
+     * 退回老课包课时：消课流水带 user_course_id 且该课包 used_lessons &gt; 0 时
+     * used-1 / remain+1；随后删除本场次消课流水，允许重新核销时再次扣课。
+     */
+    private Map<String, Object> returnUserCourse(CourseLesson lesson, CourseClass courseClass,
+                                                 Integer studentId, int now) {
+        CourseConsumeLog consumeLog = courseConsumeLogMapper.selectOne(new QueryWrapper<CourseConsumeLog>()
+                .eq("course_class_id", courseClass.getId())
+                .eq("lesson_no", lesson.getLessonNo() == null ? 0 : lesson.getLessonNo())
+                .eq("student_id", studentId)
+                .orderByDesc("id")
+                .last("limit 1"));
+        if (consumeLog == null) {
+            return null;
+        }
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("studentId", String.valueOf(studentId));
+        item.put("consumeLogId", consumeLog.getId());
+        Integer userCourseId = consumeLog.getUserCourseId();
+        if (userCourseId != null && userCourseId > 0) {
+            UserCourse userCourse = userCourseMapper.selectOne(new QueryWrapper<UserCourse>()
+                    .eq("id", userCourseId)
+                    .last("limit 1 for update"));
+            if (userCourse != null) {
+                int used = userCourse.getUsedLessons() == null ? 0 : userCourse.getUsedLessons();
+                int remain = userCourse.getRemainLessons() == null ? 0 : userCourse.getRemainLessons();
+                if (used > 0) {
+                    userCourse.setUsedLessons(used - 1);
+                    userCourse.setRemainLessons(remain + 1);
+                    if (userCourse.getStatus() != null && userCourse.getStatus() == 1 && remain + 1 > 0) {
+                        userCourse.setStatus(0);
+                    }
+                    userCourse.setUpdateTime((long) now);
+                    userCourseMapper.updateById(userCourse);
+                    item.put("userCourseId", userCourseId);
+                    item.put("usedLessons", used - 1);
+                    item.put("remainLessons", remain + 1);
+                }
+            }
+        }
+        courseConsumeLogMapper.deleteById(consumeLog.getId());
+        item.put("consumeLogDeleted", true);
+        return item;
+    }
+
+    private String reverseDetail(Map<String, Object> couponReturn, Map<String, Object> lessonReturn) {
+        StringBuilder detail = new StringBuilder();
+        if (couponReturn != null) {
+            detail.append("退回次数券：").append(nvl((String) couponReturn.get("title")))
+                    .append("，余 ").append(couponReturn.get("after")).append(" 次")
+                    .append("（原扣券流水#").append(couponReturn.get("consumeFlowId"))
+                    .append("，撤销流水#").append(couponReturn.get("returnFlowId")).append("）");
+        } else {
+            detail.append("未找到扣券流水，未退回次数券");
+        }
+        if (lessonReturn != null && lessonReturn.get("userCourseId") != null) {
+            detail.append("；退回老课包课时 1 节（课包#").append(lessonReturn.get("userCourseId"))
+                    .append("，余 ").append(lessonReturn.get("remainLessons")).append(" 节）");
+        } else {
+            detail.append("；无老课包扣课");
+        }
+        return detail.toString();
     }
 
     // ------------------------------------------------------------------
@@ -703,6 +1059,7 @@ public class CourseCheckinServiceImpl implements ICourseCheckinService {
         item.put("statusText", statusText);
         item.put("coachCheckIn", lesson.getCoachCheckIn() == null ? 0 : lesson.getCoachCheckIn());
         item.put("canManual", statusCode != 2 && pending > 0);
+        item.put("canReverse", statusCode == 1);
         item.put("updateTime", formatTime(lesson.getUpdateTime()));
         item.put("lastAudit", lastAudit == null ? null : auditRow(lastAudit));
         return item;

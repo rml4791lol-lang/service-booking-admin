@@ -17,6 +17,7 @@ import com.mdd.common.validator.annotation.IDMust;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import java.util.List;
+import java.util.Map;
 import javax.annotation.Resource;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -53,12 +54,8 @@ public class JobsController {
          JSONObject ret = this.iJobsService.getExportData(pageValidate, searchValidate);
          return AjaxResult.success(ret);
       } else if (StringUtils.isNotNull(searchValidate.getExport()) && searchValidate.getExport().equals(2)) {
-         final String path = this.iJobsService.export(searchValidate);
-         return AjaxResult.success(2, new JSONObject() {
-            {
-               this.put("url", path);
-            }
-         }, ErrorEnum.SHOW_MSG.getCode());
+         final Map<String, Object> data = this.iJobsService.export(searchValidate);
+         return AjaxResult.success(2, data, ErrorEnum.SHOW_MSG.getCode());
       } else {
          PageResult<JobsVo> list = this.iJobsService.list(pageValidate, searchValidate);
          return AjaxResult.success(list);

@@ -1860,7 +1860,7 @@ async function exportRoster() {
     exporting.value = true
     try {
         const data: any = await exportEnrollments(rosterParams())
-        if (data?.url) {
+        if (data?.ticket) {
             feedback.msgSuccess(`已生成 ${data.rowCount || 0} 条报名记录，开始下载`)
         }
     } finally {
@@ -1902,7 +1902,7 @@ async function exportSignupRoster() {
     signupExporting.value = true
     try {
         const data: any = await exportActivitySignups(signupParams())
-        if (data?.url) {
+        if (data?.ticket) {
             feedback.msgSuccess(`已生成 ${data.rowCount || 0} 条活动报名记录，开始下载`)
         }
     } finally {

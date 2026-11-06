@@ -287,6 +287,96 @@ public class ActivitySignupCancelService {
         return stats.released;
     }
 
+    /**
+     * 超时未支付关单释放（OrderAutoCancelJob / #214）：只释放仍待支付的报名批次与明细。
+     *
+     * <p>与 {@link #cancelOrderSignups(Integer)} 的区别：本方法以
+     * {@code booking.status=PENDING} 为唯一释放闸门，绝不取消/释放已支付批次；
+     * 订单已支付但批次仍待支付的数据不一致场景留给支付回调对账，不能在这里把名额退掉。
+     * 历史数据（{@code booking_id=0}）按旧口径逐行释放 1 个名额。</p>
+     *
+     * @return 实际释放的名额数（学员 + 陪同）
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int releaseUnpaidOrder(Integer orderId) {
+        if (orderId == null || orderId <= 0) {
+            return 0;
+        }
+        long now = TimeUtils.timestamp();
+        List<ActivityBooking> bookings = activityBookingMapper.selectList(new QueryWrapper<ActivityBooking>()
+                .eq("order_id", orderId)
+                .orderByAsc("id"));
+        List<ActivitySignup> signups = activitySignupMapper.selectList(new QueryWrapper<ActivitySignup>()
+                .eq("order_id", orderId)
+                .orderByAsc("id"));
+
+        Map<Integer, Integer> releaseByActivity = new HashMap<>();
+        Map<Integer, ActivityBooking> bookingById = new LinkedHashMap<>();
+        for (ActivityBooking booking : bookings) {
+            bookingById.put(booking.getId(), booking);
+            if (booking.getStatus() == null || booking.getStatus() != ActivityBooking.STATUS_PENDING) {
+                // 已支付/已取消批次不释放；其明细也不在这里取消。
+                continue;
+            }
+            int claimed = activityBookingMapper.update(null, new UpdateWrapper<ActivityBooking>()
+                    .set("status", ActivityBooking.STATUS_CANCELLED)
+                    .set("update_time", now)
+                    .eq("id", booking.getId())
+                    .eq("status", ActivityBooking.STATUS_PENDING));
+            if (claimed <= 0) {
+                continue;
+            }
+            int heads = (booking.getStudentCount() == null ? 0 : booking.getStudentCount())
+                    + (booking.getCompanionCount() == null ? 0 : booking.getCompanionCount());
+            if (heads > 0) {
+                releaseByActivity.merge(booking.getActivityId(), heads, Integer::sum);
+            }
+        }
+
+        for (ActivitySignup signup : signups) {
+            int bookingId = signup.getBookingId() == null ? 0 : signup.getBookingId();
+            if (bookingId > 0) {
+                ActivityBooking booking = bookingById.get(bookingId);
+                if (booking != null) {
+                    if (booking.getStatus() != null && booking.getStatus() == ActivityBooking.STATUS_PENDING) {
+                        cancelPendingRow(signup, now);
+                    }
+                    // 批次已支付/已取消：明细保持原状，交给支付回调/退款链路。
+                    continue;
+                }
+                // 批次行缺失的历史异常数据：退回逐行释放，至少不把名额永久卡死。
+                if (cancelPendingRow(signup, now) > 0) {
+                    releaseByActivity.merge(signup.getActivityId(), 1, Integer::sum);
+                }
+                continue;
+            }
+            if (cancelPendingRow(signup, now) > 0) {
+                releaseByActivity.merge(signup.getActivityId(), 1, Integer::sum);
+            }
+        }
+
+        int released = 0;
+        for (Map.Entry<Integer, Integer> entry : releaseByActivity.entrySet()) {
+            activityMapper.update(null, new UpdateWrapper<Activity>()
+                    .setSql("joined = GREATEST(joined - " + entry.getValue() + ", 0)")
+                    .set("update_time", now)
+                    .eq("id", entry.getKey()));
+            released += entry.getValue();
+        }
+        if (released > 0) {
+            log.info("超时未支付订单释放活动名额: orderId={} released={}", orderId, released);
+        }
+        return released;
+    }
+
+    private int cancelPendingRow(ActivitySignup signup, long now) {
+        return activitySignupMapper.update(null, new UpdateWrapper<ActivitySignup>()
+                .set("status", STATUS_CANCELLED)
+                .set("update_time", now)
+                .eq("id", signup.getId())
+                .eq("status", ActivitySignup.STATUS_PENDING));
+    }
+
     private List<ActivitySignup> signupGroup(ActivitySignup signup) {
         int bookingId = signup.getBookingId() == null ? 0 : signup.getBookingId();
         if (bookingId > 0) {

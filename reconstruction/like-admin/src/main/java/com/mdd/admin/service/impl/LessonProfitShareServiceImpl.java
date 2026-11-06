@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.mdd.admin.LikeAdminThreadLocal;
 import com.mdd.admin.service.ILessonProfitShareService;
+import com.mdd.admin.export.ExportFileService;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.admin.validate.finance.LessonProfitShareSearchValidate;
 import com.mdd.admin.vo.finance.LessonProfitShareExportVo;
@@ -102,6 +103,8 @@ public class LessonProfitShareServiceImpl implements ILessonProfitShareService {
    CourseManualLessonMapper courseManualLessonMapper;
    @Resource
    CourseManualConsumeMapper courseManualConsumeMapper;
+   @Resource
+   ExportFileService exportFileService;
 
    public LessonProfitShareServiceImpl() {
    }
@@ -207,7 +210,7 @@ public class LessonProfitShareServiceImpl implements ILessonProfitShareService {
    }
 
    @Override
-   public String export(LessonProfitShareSearchValidate searchValidate) {
+   public Map<String, Object> export(LessonProfitShareSearchValidate searchValidate) {
       PageValidate pageValidate = new PageValidate();
       pageValidate.setPage_no(1);
       pageValidate.setPage_size(Integer.MAX_VALUE);
@@ -218,16 +221,9 @@ public class LessonProfitShareServiceImpl implements ILessonProfitShareService {
 
       List<LessonProfitShareExportVo> excelList = rows.stream().map(this::toExportVo).collect(Collectors.toList());
       String fileName = ToolUtils.safeExportFileName(searchValidate.getFile_name());
-      String folderPath = "/excel/export/" + TimeUtils.timestampToDay(System.currentTimeMillis() / 1000L) + "/";
-      String path = folderPath + fileName + ".xlsx";
-      String filePath = YmlUtils.get("like.upload-directory") + path;
-      File folder = new File(YmlUtils.get("like.upload-directory") + folderPath);
-      if (!folder.exists() && !folder.mkdirs()) {
-         throw new OperateException("创建文件夹失败");
-      } else {
-         ((ExcelWriterBuilder)EasyExcel.write(filePath).head(LessonProfitShareExportVo.class)).excelType(ExcelTypeEnum.XLSX).sheet("分账记录").doWrite(excelList);
-         return UrlUtils.toAdminAbsoluteUrl(path);
-      }
+      File target = exportFileService.allocate(fileName);
+      ((ExcelWriterBuilder)EasyExcel.write(target.getAbsolutePath()).head(LessonProfitShareExportVo.class)).excelType(ExcelTypeEnum.XLSX).sheet("分账记录").doWrite(excelList);
+      return exportFileService.issue(target, fileName + ".xlsx");
    }
 
    private List<LessonProfitShareListVo> sliceExportRows(List<LessonProfitShareListVo> rows, LessonProfitShareSearchValidate searchValidate) {

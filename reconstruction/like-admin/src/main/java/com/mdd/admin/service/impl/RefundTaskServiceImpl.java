@@ -184,6 +184,9 @@ public class RefundTaskServiceImpl implements IRefundTaskService {
         if (RefundTask.STATUS_PENDING == nullSafe(task.getStatus())) {
             throw new OperateException("退款任务排队中，请稍后刷新查看");
         }
+        if (RefundTask.STATUS_PROCESSING == nullSafe(task.getStatus())) {
+            throw new OperateException("退款已受理，等待微信最终结果，请稍后刷新查看");
+        }
         long now = TimeUtils.timestamp();
         if (RefundTask.STATUS_RUNNING == nullSafe(task.getStatus())) {
             long executeTime = task.getExecuteTime() == null ? 0L : task.getExecuteTime();
@@ -216,13 +219,68 @@ public class RefundTaskServiceImpl implements IRefundTaskService {
         RefundTask task = claim.task;
         try {
             RefundExecutionResult result = refundTaskExecutor.execute(task);
+            long costMs = System.currentTimeMillis() - start;
+            if (result == null) {
+                throw new IllegalStateException("退款执行器未返回结果");
+            }
+            if (result.isProcessing()) {
+                // #214：渠道已受理但资金未确认退出，任务落「退款中」，订单 refund_status 保持 0，
+                // 由对账查询确认 SUCCESS 后再置已退款。
+                transactionTemplate().executeWithoutResult(status ->
+                        finishProcessing(task, claim.logId, result, costMs));
+                return;
+            }
+            if (result.isFailed()) {
+                transactionTemplate().executeWithoutResult(status ->
+                        finishRejected(task, claim.logId, result.getMessage(), costMs));
+                return;
+            }
             transactionTemplate().executeWithoutResult(status ->
-                    finishSuccess(task, claim.logId, result, System.currentTimeMillis() - start));
+                    finishSuccess(task, claim.logId, result, costMs));
         } catch (Exception e) {
             log.warn("退款任务执行失败 taskId={} outRefundNo={}", task.getId(), task.getOutRefundNo(), e);
             transactionTemplate().executeWithoutResult(status ->
                     finishFailure(task, claim.logId, e, System.currentTimeMillis() - start));
         }
+    }
+
+    /**
+     * 对账：查询「退款中」任务的渠道最终状态（#214）。
+     *
+     * <p>只有 SUCCESS 才把任务置成功并把订单置已退款；PROCESSING 保持原状等待下一轮；
+     * CLOSED/ABNORMAL 置失败并告警，绝不把订单置已退款。</p>
+     *
+     * @return 本轮确认成功的任务数
+     */
+    @Override
+    public int reconcileProcessing(int batchSize) {
+        List<RefundTask> processing = refundTaskMapper.selectList(new QueryWrapper<RefundTask>()
+                .eq("status", RefundTask.STATUS_PROCESSING)
+                .orderByAsc("id")
+                .last("limit " + safeBatch(batchSize)));
+        int confirmed = 0;
+        for (RefundTask task : processing) {
+            try {
+                RefundExecutionResult result = refundTaskExecutor.query(task);
+                if (result == null || result.isProcessing()) {
+                    continue;
+                }
+                if (result.isSuccess()) {
+                    transactionTemplate().executeWithoutResult(status ->
+                            finishSuccess(task, null, result, 0L));
+                    confirmed++;
+                } else if (result.isFailed()) {
+                    log.error("微信退款对账失败，需人工处理 taskId={} outRefundNo={} msg={}",
+                            task.getId(), task.getOutRefundNo(), result.getMessage());
+                    transactionTemplate().executeWithoutResult(status ->
+                            finishRejected(task, null, result.getMessage(), 0L));
+                }
+            } catch (Exception e) {
+                log.warn("微信退款对账查询异常 taskId={} outRefundNo={}",
+                        task.getId(), task.getOutRefundNo(), e);
+            }
+        }
+        return confirmed;
     }
 
     @Override
@@ -299,10 +357,10 @@ public class RefundTaskServiceImpl implements IRefundTaskService {
     private void finishSuccess(RefundTask task, Integer logId, RefundExecutionResult result, long costMs) {
         long now = TimeUtils.timestamp();
         String message = result == null || StringUtils.isEmpty(result.getMessage())
-                ? "微信退款受理成功" : result.getMessage();
+                ? "微信退款成功" : result.getMessage();
         UpdateWrapper<RefundTask> taskUpdate = new UpdateWrapper<RefundTask>()
                 .eq("id", task.getId())
-                .eq("status", RefundTask.STATUS_RUNNING)
+                .in("status", RefundTask.STATUS_RUNNING, RefundTask.STATUS_PROCESSING)
                 .set("status", RefundTask.STATUS_SUCCESS)
                 .set("result_msg", TextUtils.truncate(message, 255))
                 .set("last_error", "")
@@ -311,16 +369,68 @@ public class RefundTaskServiceImpl implements IRefundTaskService {
                 .set("update_time", now);
         refundTaskMapper.update(null, taskUpdate);
         if (task.getOrderId() != null && task.getOrderId() > 0) {
+            // #214：只有渠道确认 SUCCESS 才置订单已退款；条件更新避免覆盖并发状态。
             UpdateWrapper<RechargeOrder> orderUpdate = new UpdateWrapper<RechargeOrder>()
                     .eq("id", task.getOrderId())
+                    .eq("refund_status", 0)
+                    .eq("pay_status", 1)
                     .set("refund_status", 1)
                     .set("update_time", now);
             if (result != null && StringUtils.isNotEmpty(result.getRefundId())) {
                 orderUpdate.set("refund_transaction_id", TextUtils.truncate(result.getRefundId(), 255));
             }
-            rechargeOrderMapper.update(null, orderUpdate);
+            int updated = rechargeOrderMapper.update(null, orderUpdate);
+            if (updated <= 0) {
+                log.warn("退款成功但订单退款状态未变更（可能已退款/状态异常）orderId={} taskId={}",
+                        task.getOrderId(), task.getId());
+            }
         }
         updateLog(logId, 1, message, costMs, now);
+    }
+
+    /**
+     * 渠道已受理（PROCESSING）：任务落「退款中」，订单 refund_status 保持 0。
+     * 必须等对账查询 SUCCESS 才能置订单已退款（#214）。
+     */
+    private void finishProcessing(RefundTask task, Integer logId, RefundExecutionResult result, long costMs) {
+        long now = TimeUtils.timestamp();
+        String message = result == null || StringUtils.isEmpty(result.getMessage())
+                ? "微信退款已受理，等待最终结果" : result.getMessage();
+        int updated = refundTaskMapper.update(null, new UpdateWrapper<RefundTask>()
+                .eq("id", task.getId())
+                .eq("status", RefundTask.STATUS_RUNNING)
+                .set("status", RefundTask.STATUS_PROCESSING)
+                .set("result_msg", TextUtils.truncate(message, 255))
+                .set("last_error", "")
+                .set("next_retry_time", 0)
+                .set("finish_time", 0L)
+                .set("update_time", now));
+        if (updated > 0) {
+            log.warn("微信退款已受理，等待最终结果 taskId={} outRefundNo={} msg={}",
+                    task.getId(), task.getOutRefundNo(), message);
+        }
+        updateLog(logId, 0, message, costMs, now);
+    }
+
+    /** 渠道明确拒绝/关闭：任务置失败且不自动重试，订单不得置已退款（#214）。 */
+    private void finishRejected(RefundTask task, Integer logId, String detail, long costMs) {
+        long now = TimeUtils.timestamp();
+        String message = TextUtils.truncate(
+                StringUtils.isEmpty(detail) ? "渠道拒绝退款，需人工处理" : detail, 500);
+        int updated = refundTaskMapper.update(null, new UpdateWrapper<RefundTask>()
+                .eq("id", task.getId())
+                .in("status", RefundTask.STATUS_RUNNING, RefundTask.STATUS_PROCESSING)
+                .set("status", RefundTask.STATUS_FAILED)
+                .set("next_retry_time", 0L)
+                .set("last_error", message)
+                .set("result_msg", TextUtils.truncate(message, 255))
+                .set("finish_time", now)
+                .set("update_time", now));
+        if (updated > 0) {
+            log.error("退款任务渠道终态失败，需人工处理 taskId={} outRefundNo={} msg={}",
+                    task.getId(), task.getOutRefundNo(), message);
+        }
+        updateLog(logId, 2, message, costMs, now);
     }
 
     private void finishFailure(RefundTask task, Integer logId, Exception e, long costMs) {
@@ -403,7 +513,9 @@ public class RefundTaskServiceImpl implements IRefundTaskService {
         Map<String, Object> extend = new LinkedHashMap<>();
         extend.put("total", refundTaskMapper.selectCount(null));
         extend.put("pending", refundTaskMapper.selectCount(new QueryWrapper<RefundTask>().eq("status", RefundTask.STATUS_PENDING)));
-        extend.put("processing", refundTaskMapper.selectCount(new QueryWrapper<RefundTask>().eq("status", RefundTask.STATUS_RUNNING)));
+        extend.put("processing", refundTaskMapper.selectCount(new QueryWrapper<RefundTask>()
+                .in("status", RefundTask.STATUS_RUNNING, RefundTask.STATUS_PROCESSING)));
+        extend.put("refunding", refundTaskMapper.selectCount(new QueryWrapper<RefundTask>().eq("status", RefundTask.STATUS_PROCESSING)));
         extend.put("success", refundTaskMapper.selectCount(new QueryWrapper<RefundTask>().eq("status", RefundTask.STATUS_SUCCESS)));
         extend.put("failed", refundTaskMapper.selectCount(new QueryWrapper<RefundTask>().eq("status", RefundTask.STATUS_FAILED)));
         extend.put("successRefundFee", fen2YuanText(sumFee(RefundTask.STATUS_SUCCESS)));
@@ -429,6 +541,8 @@ public class RefundTaskServiceImpl implements IRefundTaskService {
                 return "待执行";
             case RefundTask.STATUS_RUNNING:
                 return "执行中";
+            case RefundTask.STATUS_PROCESSING:
+                return "退款中";
             case RefundTask.STATUS_SUCCESS:
                 return "成功";
             case RefundTask.STATUS_FAILED:

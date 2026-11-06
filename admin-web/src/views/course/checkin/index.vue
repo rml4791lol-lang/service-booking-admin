@@ -159,7 +159,7 @@
                         </el-tag>
                     </template>
                 </el-table-column>
-                <el-table-column label="操作" width="150" fixed="right">
+                <el-table-column label="操作" width="210" fixed="right">
                     <template #default="{ row }">
                         <el-button
                             v-perms="['course_checkin/detail']"
@@ -178,7 +178,21 @@
                         >
                             补核销
                         </el-button>
-                        <span v-else class="text-tx-secondary text-xs">-</span>
+                        <el-button
+                            v-if="row.canReverse"
+                            v-perms="['course_checkin/reverse']"
+                            type="danger"
+                            link
+                            @click="reverseCheckinRow(row)"
+                        >
+                            撤销核销
+                        </el-button>
+                        <span
+                            v-if="!row.canManual && !row.canReverse"
+                            class="text-tx-secondary text-xs"
+                        >
+                            -
+                        </span>
                     </template>
                 </el-table-column>
             </el-table>
@@ -247,6 +261,17 @@
                                 <template #default="{ row }">
                                     <div>{{ row.userName || '-' }}</div>
                                     <div class="text-tx-secondary text-xs">{{ row.userMobile || '-' }}</div>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="照片授权" width="95" align="center">
+                                <template #default="{ row }">
+                                    <el-tag
+                                        :type="row.photoAuthorized ? 'success' : 'info'"
+                                        effect="plain"
+                                        size="small"
+                                    >
+                                        {{ row.photoAuthorized ? '已授权' : '未授权' }}
+                                    </el-tag>
                                 </template>
                             </el-table-column>
                             <el-table-column label="预约状态" width="90" align="center">
@@ -479,7 +504,8 @@ import {
     getCheckinDetail,
     getCheckinList,
     getCheckinOptions,
-    manualCheckin
+    manualCheckin,
+    reverseCheckin
 } from '@/api/courseCheckin'
 import { exportCheckinReport } from '@/api/report'
 import { compactParams, currentMonthRange } from '@/views/report/helpers'
@@ -709,6 +735,38 @@ async function submitManual() {
         // 请求层已提示错误
     } finally {
         manualSubmitting.value = false
+    }
+}
+
+// ---------- 撤销核销 ----------
+async function reverseCheckinRow(row: any) {
+    try {
+        const { value } = await feedback.prompt(
+            '撤销后该场次已核销学员恢复为「已预约」，已扣次数券退回 1 次、老课包课时退回 1 节。请填写撤销原因。',
+            '撤销核销',
+            {
+                inputType: 'textarea',
+                inputPlaceholder: '撤销原因（必填，最多 500 字）',
+                inputValidator: (input: string) => {
+                    const text = String(input || '').trim()
+                    if (!text) return '撤销原因不能为空'
+                    if (text.length > 500) return '撤销原因不能超过 500 字'
+                    return true
+                }
+            }
+        )
+        const reason = String(value || '').trim()
+        const data = await reverseCheckin({ lessonId: row.sessionId, reason })
+        const couponCount = (data.couponReturns || []).length
+        feedback.msgSuccess(
+            couponCount
+                ? `撤销核销成功，已退回 ${couponCount} 张券次数`
+                : '撤销核销成功，已恢复预约状态'
+        )
+        await getLists()
+    } catch (error: any) {
+        if (error === 'cancel' || error === 'close') return
+        // 请求层已提示错误
     }
 }
 

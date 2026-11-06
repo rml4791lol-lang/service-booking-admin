@@ -8,6 +8,7 @@ import { ContentTypeEnum, RequestCodeEnum, RequestMethodsEnum } from '@/enums/re
 import router from '@/router'
 
 import { clearAuthInfo, getToken } from '../auth'
+import { openExportDownload } from '../exportDownload'
 import feedback from '../feedback'
 import { Axios } from './axios'
 import type { AxiosHooks } from './type'
@@ -71,7 +72,9 @@ const axiosHooks: AxiosHooks = {
                 router.push(PageEnum.LOGIN)
                 return Promise.reject()
             case RequestCodeEnum.OPEN_NEW_PAGE:
-                window.location.href = data.url
+                // #214：导出接口改为返回 {file, ticket, expiresIn}，
+                // 统一打开一次性票据下载地址；老后端 data.url 兜底。
+                openExportDownload(data)
                 return data
             default:
                 return data

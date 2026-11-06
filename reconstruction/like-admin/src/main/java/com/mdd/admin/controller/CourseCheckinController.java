@@ -5,6 +5,7 @@ import com.mdd.admin.aop.Log;
 import com.mdd.admin.service.ICourseCheckinService;
 import com.mdd.admin.validate.checkin.CourseCheckinAuditSearchValidate;
 import com.mdd.admin.validate.checkin.CourseCheckinManualValidate;
+import com.mdd.admin.validate.checkin.CourseCheckinReverseValidate;
 import com.mdd.admin.validate.checkin.CourseCheckinSearchValidate;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.common.core.AjaxResult;
@@ -25,8 +26,9 @@ import java.util.Map;
 /**
  * 后台待核销与人工补核销（T30.4 / #37）。
  *
- * <p>接口权限按路由校验：{@code course_checkin/list|detail|options|manual|audit}，
- * 菜单/权限 seed 见 tools/ddl/migrations/20261023-add-pending-checkin-menu.sql。</p>
+ * <p>接口权限按路由校验：{@code course_checkin/list|detail|options|manual|audit|reverse}，
+ * 菜单/权限 seed 见 tools/ddl/migrations/20261023-add-pending-checkin-menu.sql 与
+ * 20261107-add-checkin-reverse-perm.sql。</p>
  */
 @RestController
 @RequestMapping(value = "/adminapi/course_checkin")
@@ -62,6 +64,15 @@ public class CourseCheckinController {
             @Validated @RequestBody CourseCheckinManualValidate manualValidate) {
         Integer adminId = LikeAdminThreadLocal.getAdminId();
         return AjaxResult.success(iCourseCheckinService.manual(adminId, manualValidate));
+    }
+
+    @Log(title = "撤销核销")
+    @PostMapping(value = "/reverse")
+    @ApiOperation(value = "撤销核销")
+    public AjaxResult<Map<String, Object>> reverse(
+            @Validated @RequestBody CourseCheckinReverseValidate reverseValidate) {
+        Integer adminId = LikeAdminThreadLocal.getAdminId();
+        return AjaxResult.success(iCourseCheckinService.reverse(adminId, reverseValidate));
     }
 
     @GetMapping(value = "/audit")

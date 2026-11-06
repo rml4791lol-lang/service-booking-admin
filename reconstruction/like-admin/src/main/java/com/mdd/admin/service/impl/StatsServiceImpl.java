@@ -8,6 +8,7 @@ import com.mdd.admin.mapper.StatsQuery;
 import com.mdd.admin.mapper.StatsQueryMapper;
 import com.mdd.admin.service.IReportService;
 import com.mdd.admin.service.IStatsService;
+import com.mdd.admin.export.ExportFileService;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.admin.validate.report.ReportSearchValidate;
 import com.mdd.admin.validate.stats.StatsSearchValidate;
@@ -121,6 +122,8 @@ public class StatsServiceImpl implements IStatsService {
     /** 教练维度复用 #102 的教练月营业额实现（同一份 SQL / 导出 / 下钻）。 */
     @Resource
     IReportService iReportService;
+    @Resource
+    ExportFileService exportFileService;
 
     // ------------------------------------------------------------------
     // 一级：对象数量 + 期间总览 + 环比
@@ -306,14 +309,7 @@ public class StatsServiceImpl implements IStatsService {
         String requested = sanitizeFileName(trim(searchValidate.getFile_name()));
         String fileName = requested.isEmpty() ? "stats-community-"
                 + period.startDate.replace("-", "") + "-" + period.endDate.replace("-", "") : requested;
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay(System.currentTimeMillis() / 1000L) + "/";
-        String path = folderPath + fileName + "-" + System.currentTimeMillis() + ".xlsx";
-        String uploadDirectory = YmlUtils.get("like.upload-directory");
-        File folder = new File(uploadDirectory + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("创建导出目录失败");
-        }
-        File target = new File(uploadDirectory + path);
+        File target = exportFileService.allocate(fileName);
         List<List<String>> head = new ArrayList<List<String>>();
         for (String title : COMMUNITY_COLUMNS) {
             head.add(Collections.singletonList(title));
@@ -351,7 +347,7 @@ public class StatsServiceImpl implements IStatsService {
         summary.put("revenue", round2(revenue));
 
         Map<String, Object> result = new LinkedHashMap<String, Object>();
-        result.put("url", UrlUtils.toAdminAbsoluteUrl(path));
+        result.putAll(exportFileService.issue(target, fileName + ".xlsx"));
         result.put("fileName", fileName + ".xlsx");
         result.put("rowCount", rows.size());
         result.put("summary", summary);
@@ -415,14 +411,7 @@ public class StatsServiceImpl implements IStatsService {
         String requested = sanitizeFileName(trim(searchValidate.getFile_name()));
         String fileName = requested.isEmpty() ? "stats-area-"
                 + period.startDate.replace("-", "") + "-" + period.endDate.replace("-", "") : requested;
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay(System.currentTimeMillis() / 1000L) + "/";
-        String path = folderPath + fileName + "-" + System.currentTimeMillis() + ".xlsx";
-        String uploadDirectory = YmlUtils.get("like.upload-directory");
-        File folder = new File(uploadDirectory + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("创建导出目录失败");
-        }
-        File target = new File(uploadDirectory + path);
+        File target = exportFileService.allocate(fileName);
         List<List<String>> head = new ArrayList<List<String>>();
         for (String title : AREA_COLUMNS) {
             head.add(Collections.singletonList(title));
@@ -460,7 +449,7 @@ public class StatsServiceImpl implements IStatsService {
         summary.put("revenue", round2(revenue));
 
         Map<String, Object> result = new LinkedHashMap<String, Object>();
-        result.put("url", UrlUtils.toAdminAbsoluteUrl(path));
+        result.putAll(exportFileService.issue(target, fileName + ".xlsx"));
         result.put("fileName", fileName + ".xlsx");
         result.put("rowCount", rows.size());
         result.put("summary", summary);
@@ -1037,14 +1026,7 @@ public class StatsServiceImpl implements IStatsService {
         String requested = sanitizeFileName(trim(searchValidate.getFile_name()));
         String fileName = requested.isEmpty() ? filePrefix + "-"
                 + period.startDate.replace("-", "") + "-" + period.endDate.replace("-", "") : requested;
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay(System.currentTimeMillis() / 1000L) + "/";
-        String path = folderPath + fileName + "-" + System.currentTimeMillis() + ".xlsx";
-        String uploadDirectory = YmlUtils.get("like.upload-directory");
-        File folder = new File(uploadDirectory + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("创建导出目录失败");
-        }
-        File target = new File(uploadDirectory + path);
+        File target = exportFileService.allocate(fileName);
         List<List<String>> head = new ArrayList<List<String>>();
         for (String title : columns) {
             head.add(Collections.singletonList(title));
@@ -1067,7 +1049,7 @@ public class StatsServiceImpl implements IStatsService {
             throw error;
         }
         Map<String, Object> result = new LinkedHashMap<String, Object>();
-        result.put("url", UrlUtils.toAdminAbsoluteUrl(path));
+        result.putAll(exportFileService.issue(target, fileName + ".xlsx"));
         result.put("fileName", fileName + ".xlsx");
         result.put("rowCount", rows.size());
         result.put("periodStart", period.startDate);

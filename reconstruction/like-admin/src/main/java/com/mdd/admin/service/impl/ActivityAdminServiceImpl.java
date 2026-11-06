@@ -52,6 +52,7 @@ import com.mdd.common.mapper.region.RegionMapper;
 import com.mdd.common.mapper.student.StudentMapper;
 import com.mdd.common.mapper.user.UserMapper;
 import com.mdd.admin.vo.activity.ActivityEnrollAlertDetailVo;
+import com.mdd.admin.export.ExportFileService;
 import com.mdd.admin.vo.activity.ActivityEnrollAlertListVo;
 import com.mdd.admin.vo.activity.ActivityEnrollAlertSignupVo;
 import com.mdd.admin.vo.activity.ActivitySignupExportVo;
@@ -104,6 +105,9 @@ public class ActivityAdminServiceImpl implements IActivityAdminService {
     private static final int EXPORT_LIMIT = 10000;
     private static final String DEDUPE_RULE = "同场次 + 手机号 + 学员名";
     private static final String SIGNUP_DEDUPE_RULE = "同一活动 + 同一学员（一人一行）";
+
+    @Resource
+    ExportFileService exportFileService;
 
     @Resource
     CourseLessonMapper courseLessonMapper;
@@ -569,18 +573,12 @@ public class ActivityAdminServiceImpl implements IActivityAdminService {
 
         String fileName = "enrollment-roster-" + LocalDateTime.now().format(FILENAME_FMT)
                 + "-" + ToolUtils.makeUUID().substring(0, 6) + ".xlsx";
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay(TimeUtils.timestamp()) + "/";
-        String path = folderPath + fileName;
-        String filePath = YmlUtils.get("like.upload-directory") + path;
-        File folder = new File(YmlUtils.get("like.upload-directory") + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("创建导出目录失败");
-        }
-        EasyExcel.write(filePath).head(EnrollmentExportVo.class)
+        File target = exportFileService.allocate(fileName);
+        EasyExcel.write(target.getAbsolutePath()).head(EnrollmentExportVo.class)
                 .excelType(ExcelTypeEnum.XLSX).sheet("报名名单").doWrite(rows);
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("url", UrlUtils.toAdminAbsoluteUrl(path));
+        result.putAll(exportFileService.issue(target, fileName));
         result.put("fileName", fileName);
         result.put("rowCount", rows.size());
         result.put("summary", enrollmentSummary(sessionId, linkId, token, keyword, phone,
@@ -718,18 +716,12 @@ public class ActivityAdminServiceImpl implements IActivityAdminService {
 
         String fileName = "activity-roster-" + LocalDateTime.now().format(FILENAME_FMT)
                 + "-" + ToolUtils.makeUUID().substring(0, 6) + ".xlsx";
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay(TimeUtils.timestamp()) + "/";
-        String path = folderPath + fileName;
-        String filePath = YmlUtils.get("like.upload-directory") + path;
-        File folder = new File(YmlUtils.get("like.upload-directory") + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("创建导出目录失败");
-        }
-        EasyExcel.write(filePath).head(ActivitySignupExportVo.class)
+        File target = exportFileService.allocate(fileName);
+        EasyExcel.write(target.getAbsolutePath()).head(ActivitySignupExportVo.class)
                 .excelType(ExcelTypeEnum.XLSX).sheet("活动报名名单").doWrite(rows);
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("url", UrlUtils.toAdminAbsoluteUrl(path));
+        result.putAll(exportFileService.issue(target, fileName));
         result.put("fileName", fileName);
         result.put("rowCount", rows.size());
         result.put("summary", activitySignupSummary(activityId, statusFilter, payFilter, like,

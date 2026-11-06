@@ -42,6 +42,6 @@ public interface IInstructorService {
 
     public JSONObject getExportData(PageValidate var1, InstructorSearchValidate var2);
 
-    public String export(InstructorSearchValidate var1);
+    public Map<String, Object> export(InstructorSearchValidate var1);
 }
 

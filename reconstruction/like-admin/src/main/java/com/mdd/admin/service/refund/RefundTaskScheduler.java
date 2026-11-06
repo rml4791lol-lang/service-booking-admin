@@ -37,6 +37,11 @@ public class RefundTaskScheduler {
             for (Integer taskId : taskIds) {
                 refundTaskDispatcher.dispatch(taskId);
             }
+            // #214：微信退款受理后（PROCESSING）必须对账确认 SUCCESS 才能置订单已退款。
+            int confirmed = refundTaskService.reconcileProcessing(batchSize);
+            if (confirmed > 0) {
+                log.info("退款任务对账：{} 条退款中任务确认成功", confirmed);
+            }
         } catch (Exception e) {
             // 清扫失败不能影响应用主流程，下一轮继续。
             log.error("退款任务清扫异常", e);

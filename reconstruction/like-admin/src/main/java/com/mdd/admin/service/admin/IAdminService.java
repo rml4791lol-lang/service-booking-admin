@@ -31,6 +31,7 @@ import com.mdd.admin.vo.system.SystemAuthAdminListedVo;
 import com.mdd.admin.vo.system.SystemAuthAdminSelvesVo;
 import com.mdd.common.core.PageResult;
 import java.util.List;
+import java.util.Map;
 
 public interface IAdminService {
     public PageResult<SystemAuthAdminListedVo> list(PageValidate var1, SystemAdminSearchValidate var2);
@@ -53,7 +54,7 @@ public interface IAdminService {
 
     public JSONObject getExportData(PageValidate var1, SystemAdminSearchValidate var2);
 
-    public String export(SystemAdminSearchValidate var1);
+    public Map<String, Object> export(SystemAdminSearchValidate var1);
 
     public void editSelf(SystemEditSelfValidate var1, Integer var2);
 }

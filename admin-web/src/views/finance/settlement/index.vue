@@ -277,6 +277,7 @@ import {
     getSettlementSummary
 } from '@/api/settlement'
 import { usePaging } from '@/hooks/usePaging'
+import { openExportDownload } from '@/utils/exportDownload'
 import feedback from '@/utils/feedback'
 import { compactParams, money, numberText } from '@/views/report/helpers'
 
@@ -377,11 +378,8 @@ async function handleExport() {
     feedback.loading('正在导出收益明细...')
     try {
         const result: any = await exportSettlement(compactParams({ ...query }))
-        // 该导出接口返回 code=1 + data.url（不同于报表的 code=2 拦截器约定）；
-        // 这里显式打开下载地址，避免改动后端契约。
-        if (result && result.url) {
-            window.location.href = result.url
-        }
+        // #214：该导出接口返回 code=1 + {file, ticket, expiresIn}，显式打开票据下载地址。
+        openExportDownload(result)
     } finally {
         feedback.closeLoading()
         exporting.value = false

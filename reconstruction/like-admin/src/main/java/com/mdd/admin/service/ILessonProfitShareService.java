@@ -24,7 +24,7 @@ public interface ILessonProfitShareService {
 
     public JSONObject getExportData(PageValidate var1, LessonProfitShareSearchValidate var2);
 
-    public String export(LessonProfitShareSearchValidate var1);
+    public Map<String, Object> export(LessonProfitShareSearchValidate var1);
 
     public List<Map<String, Object>> communityOptions();
 }

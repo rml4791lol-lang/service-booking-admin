@@ -138,10 +138,17 @@
             <div class="mb-4 flex flex-wrap items-center gap-2">
                 <span class="text-tx-secondary">关联学员：</span>
                 <template v-if="students.length">
-                    <el-tag v-for="student in students" :key="student.id" type="info">
+                    <el-tag
+                        v-for="student in students"
+                        :key="student.id"
+                        :type="student.photoAuthorized ? 'success' : 'info'"
+                    >
                         {{ student.name }}
                         <span v-if="student.gender && student.gender !== '未知'">
                             （{{ student.gender }}）
+                        </span>
+                        <span class="ml-1">
+                            · 照片{{ student.photoAuthorized ? '已授权' : '未授权' }}
                         </span>
                     </el-tag>
                 </template>

@@ -21,12 +21,14 @@ public class RefundTask implements Serializable {
 
     /** 状态：待执行 */
     public static final int STATUS_PENDING = 0;
-    /** 状态：执行中 */
+    /** 状态：执行中（本地调用渠道中） */
     public static final int STATUS_RUNNING = 1;
-    /** 状态：成功（仅微信退款受理成功后） */
+    /** 状态：成功（渠道确认资金已退出） */
     public static final int STATUS_SUCCESS = 2;
     /** 状态：失败 */
     public static final int STATUS_FAILED = 3;
+    /** 状态：退款中（渠道已受理，等待对账确认；#214） */
+    public static final int STATUS_PROCESSING = 4;
 
     @TableId(value = "id", type = IdType.AUTO)
     @ApiModelProperty(value = "任务ID")

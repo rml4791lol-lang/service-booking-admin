@@ -45,6 +45,6 @@ public interface IUserService {
 
     public Map<String, Object> stats();
 
-    public String export(UserSearchValidate var1);
+    public Map<String, Object> export(UserSearchValidate var1);
 }
 

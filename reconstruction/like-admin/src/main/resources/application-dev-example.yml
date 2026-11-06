@@ -14,6 +14,9 @@ like:
   url: http://127.0.0.1:8082 # 对外访问基址（拼接上传文件绝对地址）
   front-url: http://127.0.0.1:8083 # 小程序端服务基址（渠道/装修配置回填）
   upload-directory: /www/uploads/likeadmin-java/ # 上传目录
+  # 导出文件私有目录（#214）：与公开 uploads 分离，禁止配到 upload-directory 内。
+  # 文件经一次性票据下载后即删除；容器重启丢失可接受（导出可重新生成）。
+  export-directory: /tmp/lxt-export/
   # 是否演示环境：true 时后台所有 POST 被拒绝，本地务必 false
   production: false
   # 调试开关（GlobalConfig.debug）：缺省 false；生产必须保持 false，本地排查可设为 true。

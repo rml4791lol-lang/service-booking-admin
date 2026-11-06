@@ -225,6 +225,18 @@ public class RedisUtils {
     }
 
     /**
+     * 获取key的值并原子删除（单次消费语义，#214 导出票据）
+     *
+     * @author fzr
+     * @param key 键
+     * @return Object 不存在时返回 null
+     */
+    public static Object getAndDelete(String key) {
+        key = redisPrefix + key;
+        return redisTemplate.opsForValue().getAndDelete(key);
+    }
+
+    /**
      * 获取旧值并设置新值
      *
      * @author fzr

@@ -6,6 +6,7 @@ import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.mdd.admin.LikeAdminThreadLocal;
 import com.mdd.admin.service.IFinanceSettlementService;
+import com.mdd.admin.export.ExportFileService;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.admin.validate.finance.FinanceSettlementPushValidate;
 import com.mdd.admin.validate.finance.FinanceSettlementSearchValidate;
@@ -111,6 +112,8 @@ public class FinanceSettlementServiceImpl implements IFinanceSettlementService {
     SettlementReporter settlementReporter;
     @Resource
     SettlementPushLogMapper settlementPushLogMapper;
+    @Resource
+    ExportFileService exportFileService;
 
     @Override
     public PageResult<SettlementItem> lists(PageValidate pageValidate, FinanceSettlementSearchValidate searchValidate) {
@@ -222,23 +225,17 @@ public class FinanceSettlementServiceImpl implements IFinanceSettlementService {
         if (fileName.isEmpty()) {
             fileName = "settlement-" + query.periodStart.replace("-", "") + "-" + query.periodEnd.replace("-", "");
         }
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay(System.currentTimeMillis() / 1000L) + "/";
-        String path = folderPath + fileName + ".xlsx";
-        String filePath = YmlUtils.get("like.upload-directory") + path;
-        File folder = new File(YmlUtils.get("like.upload-directory") + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("创建导出目录失败");
-        }
+        File target = exportFileService.allocate(fileName);
         // #102：后台「分账数据」页改为只读「收益明细」，导出只保留真实营业额与明细列。
         // 说明：SettlementExportVo 的字段名不能删（社区系统分账契约 v1.0 与 freeze-check 冻结），
         // 这里用 EasyExcel 的排除列能力隐藏二次分配/对账列，避免契约字段与页面口径互相绑架。
-        EasyExcel.write(filePath).head(SettlementExportVo.class)
+        EasyExcel.write(target.getAbsolutePath()).head(SettlementExportVo.class)
                 .excludeColumnFieldNames(REVENUE_DETAIL_HIDDEN_COLUMNS)
                 .excelType(ExcelTypeEnum.XLSX).sheet("收益明细").doWrite(exportRows);
         SettlementSummary exportSummary = this.summarize(rows);
         this.hideAllocation(exportSummary);
         Map<String, Object> data = new LinkedHashMap<String, Object>();
-        data.put("url", UrlUtils.toAdminAbsoluteUrl(path));
+        data.putAll(exportFileService.issue(target, fileName + ".xlsx"));
         data.put("fileName", fileName + ".xlsx");
         data.put("rowCount", exportRows.size());
         data.put("periodStart", query.periodStart);

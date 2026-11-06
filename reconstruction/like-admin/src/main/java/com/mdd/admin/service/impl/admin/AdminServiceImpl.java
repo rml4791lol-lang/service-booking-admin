@@ -69,6 +69,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.github.yulichang.interfaces.MPJBaseJoin;
 import com.github.yulichang.query.MPJQueryWrapper;
 import com.mdd.admin.service.admin.IAdminDeptService;
+import com.mdd.admin.export.ExportFileService;
 import com.mdd.admin.service.admin.IAdminJobsService;
 import com.mdd.admin.service.admin.IAdminRoleService;
 import com.mdd.admin.service.admin.IAdminService;
@@ -109,6 +110,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import javax.annotation.Resource;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
@@ -142,6 +144,8 @@ implements IAdminService {
     IAuthService iAuthService;
     @Resource
     ISystemMenuService systemMenuService;
+    @Resource
+    ExportFileService exportFileService;
 
     public PageResult<SystemAuthAdminListedVo> list(PageValidate pageValidate, SystemAdminSearchValidate searchValidate) {
         Integer page = pageValidate.getPage_no();
@@ -396,7 +400,7 @@ implements IAdminService {
         return ret;
     }
 
-    public String export(SystemAdminSearchValidate searchValidate) {
+    public Map<String, Object> export(SystemAdminSearchValidate searchValidate) {
         PageValidate pageValidate = new PageValidate();
         if (StringUtils.isNotNull(searchValidate.getPage_start())) {
             pageValidate.setPage_no(searchValidate.getPage_start());
@@ -411,15 +415,9 @@ implements IAdminService {
         Boolean isAll = StringUtils.isNull(searchValidate.getPage_type()) || searchValidate.getPage_type().equals(0);
         List excellist = this.getExcellist(isAll.booleanValue(), pageValidate, searchValidate);
         String fileName = ToolUtils.safeExportFileName(searchValidate.getFile_name());
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay((Long)(System.currentTimeMillis() / 1000L)) + "/";
-        String path = folderPath + fileName + ".xlsx";
-        String filePath = YmlUtils.get((String)"like.upload-directory") + path;
-        File folder = new File(YmlUtils.get((String)"like.upload-directory") + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("\u521b\u5efa\u6587\u4ef6\u5939\u5931\u8d25");
-        }
-        ((ExcelWriterBuilder)EasyExcel.write((String)filePath).head(SystemAuthAdminListedExportVo.class)).excelType(ExcelTypeEnum.XLSX).sheet("\u7ba1\u7406\u5458\u8bb0\u5f55").doWrite((Collection)excellist);
-        return UrlUtils.toAdminAbsoluteUrl((String)path);
+        File target = exportFileService.allocate(fileName);
+        ((ExcelWriterBuilder)EasyExcel.write((String)target.getAbsolutePath()).head(SystemAuthAdminListedExportVo.class)).excelType(ExcelTypeEnum.XLSX).sheet("\u7ba1\u7406\u5458\u8bb0\u5f55").doWrite((Collection)excellist);
+        return exportFileService.issue(target, fileName + ".xlsx");
     }
 
     @Transactional

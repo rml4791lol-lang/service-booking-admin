@@ -34,7 +34,7 @@ public interface IFinanceRechargerService {
 
     public JSONObject getExportData(PageValidate var1, FinanceRechargeSearchValidate var2);
 
-    public String export(FinanceRechargeSearchValidate var1);
+    public Map<String, Object> export(FinanceRechargeSearchValidate var1);
 
     public Map<String, Object> stats();
 

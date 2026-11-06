@@ -47,6 +47,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.mdd.admin.service.IInstructorService;
+import com.mdd.admin.export.ExportFileService;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.admin.validate.instructor.InstructorCreateValidate;
 import com.mdd.admin.validate.instructor.InstructorSearchValidate;
@@ -98,6 +99,8 @@ implements IInstructorService {
     CommunityMapper communityMapper;
     @Resource
     com.mdd.admin.service.IInstructorAccountService instructorAccountService;
+    @Resource
+    ExportFileService exportFileService;
 
     public PageResult<InstructorListedVo> list(PageValidate pageValidate, InstructorSearchValidate searchValidate) {
         Integer page = pageValidate.getPage_no();
@@ -284,7 +287,7 @@ implements IInstructorService {
         return ToolUtils.getExportData((Long)pageResult.getCount(), (Integer)limit, (Integer)searchValidate.getPage_start(), (Integer)searchValidate.getPage_end(), (String)"\u6559\u7ec3\u5217\u8868");
     }
 
-    public String export(InstructorSearchValidate searchValidate) {
+    public Map<String, Object> export(InstructorSearchValidate searchValidate) {
         PageValidate pageValidate = new PageValidate();
         if (StringUtils.isNotNull(searchValidate.getPage_start())) {
             pageValidate.setPage_no(searchValidate.getPage_start());
@@ -299,15 +302,9 @@ implements IInstructorService {
         boolean isAll = StringUtils.isNull(searchValidate.getPage_type()) || searchValidate.getPage_type().equals(0);
         List exportList = this.getExcellist(isAll, pageValidate, searchValidate);
         String fileName = ToolUtils.safeExportFileName(searchValidate.getFile_name());
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay((Long)(System.currentTimeMillis() / 1000L)) + "/";
-        String path = folderPath + fileName + ".xlsx";
-        String filePath = YmlUtils.get((String)"like.upload-directory") + path;
-        File folder = new File(YmlUtils.get((String)"like.upload-directory") + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("\u521b\u5efa\u6587\u4ef6\u5939\u5931\u8d25");
-        }
-        ((ExcelWriterBuilder)EasyExcel.write((String)filePath).head(InstructorExportVo.class)).excelType(ExcelTypeEnum.XLSX).sheet("\u6559\u7ec3\u8bb0\u5f55").doWrite((Collection)exportList);
-        return UrlUtils.toAdminAbsoluteUrl((String)path);
+        File target = exportFileService.allocate(fileName);
+        ((ExcelWriterBuilder)EasyExcel.write((String)target.getAbsolutePath()).head(InstructorExportVo.class)).excelType(ExcelTypeEnum.XLSX).sheet("\u6559\u7ec3\u8bb0\u5f55").doWrite((Collection)exportList);
+        return exportFileService.issue(target, fileName + ".xlsx");
     }
 
     private List<InstructorExportVo> getExcellist(boolean isAll, PageValidate pageValidate, InstructorSearchValidate searchValidate) {

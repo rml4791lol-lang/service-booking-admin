@@ -21,6 +21,7 @@ import com.mdd.admin.validate.system.JobsUpdateValidate;
 import com.mdd.admin.vo.system.JobsVo;
 import com.mdd.common.core.PageResult;
 import java.util.List;
+import java.util.Map;
 
 public interface IJobsService {
     public List<JobsVo> all();
@@ -37,6 +38,6 @@ public interface IJobsService {
 
     public JSONObject getExportData(PageValidate var1, JobsSearchValidate var2);
 
-    public String export(JobsSearchValidate var1);
+    public Map<String, Object> export(JobsSearchValidate var1);
 }
 

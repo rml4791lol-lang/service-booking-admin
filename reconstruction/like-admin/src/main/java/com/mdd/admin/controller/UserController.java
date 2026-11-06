@@ -23,6 +23,7 @@ import com.mdd.common.entity.student.Student;
 import com.mdd.common.enums.ErrorEnum;
 import com.mdd.common.exception.LoginException;
 import com.mdd.common.mapper.student.StudentMapper;
+import com.mdd.common.service.PhotoAuthorizationService;
 import com.mdd.common.util.StringUtils;
 import com.mdd.common.validator.annotation.IDMust;
 import io.swagger.annotations.Api;
@@ -54,6 +55,8 @@ public class UserController {
    IUserCourseAccountService userCourseAccountService;
    @Resource
    IUserWalletBatchService iUserWalletBatchService;
+   @Resource
+   PhotoAuthorizationService photoAuthorizationService;
 
    public UserController() {
    }
@@ -73,12 +76,8 @@ public class UserController {
          return AjaxResult.success(ret);
       } else if (StringUtils.isNotNull(searchValidate.getExport()) && searchValidate.getExport().equals(2)) {
          this.checkExportPermission();
-         final String path = this.iUserService.export(searchValidate);
-         return AjaxResult.success(2, new JSONObject() {
-            {
-               this.put("url", path);
-            }
-         }, ErrorEnum.SHOW_MSG.getCode());
+         final Map<String, Object> data = this.iUserService.export(searchValidate);
+         return AjaxResult.success(2, data, ErrorEnum.SHOW_MSG.getCode());
       } else {
          PageResult<UserVo> list = this.iUserService.list(pageValidate, searchValidate);
          return AjaxResult.success(list);
@@ -183,6 +182,13 @@ public class UserController {
          map.put("gender", s.getGender() == 1 ? "男" : (s.getGender() == 2 ? "女" : "未知"));
          map.put("birthday", s.getBirthday());
          map.put("isDefault", s.getIsDefault());
+         // 照片授权（#214 P0，只读）：家长端已落台账的当前状态与最近动作时间。
+         com.mdd.common.entity.photo.PhotoAuthorization photoAuth =
+               this.photoAuthorizationService.get(s.getId());
+         map.put("photoAuthorized", photoAuth != null
+               && photoAuth.getAuthorized() != null && photoAuth.getAuthorized() == 1);
+         map.put("photoAuthorizedAt", photoAuth == null ? null : photoAuth.getAuthorizedAt());
+         map.put("photoRevokedAt", photoAuth == null ? null : photoAuth.getRevokedAt());
          result.add(map);
       }
 

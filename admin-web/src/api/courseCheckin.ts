@@ -20,6 +20,11 @@ export function manualCheckin(params: any) {
     return request.post({ url: '/course_checkin/manual', params })
 }
 
+// 撤销核销（退回次数券/老课包课时，原因必填）
+export function reverseCheckin(params: any) {
+    return request.post({ url: '/course_checkin/reverse', params })
+}
+
 // 补核销审计查询
 export function getCheckinAudit(params: any) {
     return request.get({ url: '/course_checkin/audit', params }, { ignoreCancelToken: true })

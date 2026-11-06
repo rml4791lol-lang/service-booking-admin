@@ -28,6 +28,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.github.binarywang.wxpay.bean.request.WxPayRefundV3Request;
 import com.github.binarywang.wxpay.bean.request.WxPayUnifiedOrderV3Request;
+import com.github.binarywang.wxpay.bean.result.WxPayRefundQueryV3Result;
 import com.github.binarywang.wxpay.bean.result.WxPayRefundV3Result;
 import com.github.binarywang.wxpay.bean.result.WxPayUnifiedOrderV3Result;
 import com.github.binarywang.wxpay.bean.result.enums.TradeTypeEnum;
@@ -141,6 +142,11 @@ public class WxPayDriver {
         requestObj.setAmount(amount);
         WxPayService wxPayService = WxPayDriver.handler(4);
         return wxPayService.refundV3(requestObj);
+    }
+
+    /** 微信退款对账查询（#214）：按商户退款单号查询渠道最终状态。 */
+    public static WxPayRefundQueryV3Result queryRefund(String outRefundNo) throws WxPayException {
+        return WxPayDriver.handler(4).refundQueryV3(outRefundNo);
     }
 
     public static WxPayService handler(Integer terminal) {

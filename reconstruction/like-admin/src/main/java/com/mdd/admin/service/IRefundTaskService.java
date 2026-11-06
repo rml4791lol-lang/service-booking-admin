@@ -51,4 +51,12 @@ public interface IRefundTaskService {
      * 查出待执行/到点的失败任务 ID。
      */
     List<Integer> listDueTaskIds(int batchSize);
+
+    /**
+     * 对账查询「退款中」任务的渠道最终状态（#214）：
+     * 只有 SUCCESS 才把订单置已退款，PROCESSING 留待下一轮，终态失败告警。
+     *
+     * @return 本轮确认成功的任务数
+     */
+    int reconcileProcessing(int batchSize);
 }

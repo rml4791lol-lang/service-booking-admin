@@ -9,6 +9,7 @@ import com.mdd.admin.LikeAdminThreadLocal;
 import com.mdd.admin.mapper.ReportQuery;
 import com.mdd.admin.mapper.ReportQueryMapper;
 import com.mdd.admin.service.IReportService;
+import com.mdd.admin.export.ExportFileService;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.admin.validate.report.ReportSearchValidate;
 import com.mdd.common.core.PageResult;
@@ -188,6 +189,8 @@ public class ReportServiceImpl implements IReportService {
     ClassApplyMapper classApplyMapper;
     @Resource
     ClassApplyGroupMapper classApplyGroupMapper;
+    @Resource
+    ExportFileService exportFileService;
 
     // ------------------------------------------------------------------
     // 课程报表
@@ -1079,14 +1082,7 @@ public class ReportServiceImpl implements IReportService {
         String defaultName = "report-" + type + "-" + periodStart(search).replace("-", "")
                 + "-" + periodEnd(search).replace("-", "");
         String fileName = requested.isEmpty() ? defaultName : requested;
-        String folderPath = "/excel/export/" + TimeUtils.timestampToDay(System.currentTimeMillis() / 1000L) + "/";
-        String path = folderPath + fileName + "-" + System.currentTimeMillis() + ".xlsx";
-        String uploadDirectory = YmlUtils.get("like.upload-directory");
-        File folder = new File(uploadDirectory + folderPath);
-        if (!folder.exists() && !folder.mkdirs()) {
-            throw new OperateException("创建导出目录失败");
-        }
-        File target = new File(uploadDirectory + path);
+        File target = exportFileService.allocate(fileName);
         long written = 0;
         List<List<String>> head = new ArrayList<List<String>>();
         for (Column column : columns) {
@@ -1126,7 +1122,7 @@ public class ReportServiceImpl implements IReportService {
             throw error;
         }
         Map<String, Object> result = new LinkedHashMap<String, Object>();
-        result.put("url", UrlUtils.toAdminAbsoluteUrl(path));
+        result.putAll(exportFileService.issue(target, fileName + ".xlsx"));
         result.put("fileName", fileName + ".xlsx");
         result.put("rowCount", written);
         result.put("summary", summary);

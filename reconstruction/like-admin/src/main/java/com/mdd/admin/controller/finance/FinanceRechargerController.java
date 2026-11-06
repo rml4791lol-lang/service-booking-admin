@@ -48,12 +48,8 @@ public class FinanceRechargerController {
          return AjaxResult.success(ret);
       } else if (StringUtils.isNotNull(searchValidate.getExport()) && searchValidate.getExport().equals(2)) {
          this.checkExportPermission();
-         final String path = this.iFinanceRechargerService.export(searchValidate);
-         return AjaxResult.success(2, new JSONObject() {
-            {
-               this.put("url", path);
-            }
-         }, ErrorEnum.SHOW_MSG.getCode());
+         final Map<String, Object> data = this.iFinanceRechargerService.export(searchValidate);
+         return AjaxResult.success(2, data, ErrorEnum.SHOW_MSG.getCode());
       } else {
          PageResult<FinanceRechargeListVo> list = this.iFinanceRechargerService.list(pageValidate, searchValidate);
          return AjaxResult.success(list);

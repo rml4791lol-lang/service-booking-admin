@@ -22,6 +22,7 @@ import com.mdd.common.validator.annotation.IDMust;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import javax.annotation.Resource;
+import java.util.Map;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -49,12 +50,8 @@ public class SystemAuthAdminController {
          JSONObject ret = this.iSystemAuthAdminService.getExportData(pageValidate, searchValidate);
          return AjaxResult.success(ret);
       } else if (StringUtils.isNotNull(searchValidate.getExport()) && searchValidate.getExport().equals(2)) {
-         final String path = this.iSystemAuthAdminService.export(searchValidate);
-         return AjaxResult.success(2, new JSONObject() {
-            {
-               this.put("url", path);
-            }
-         }, ErrorEnum.SHOW_MSG.getCode());
+         final Map<String, Object> data = this.iSystemAuthAdminService.export(searchValidate);
+         return AjaxResult.success(2, data, ErrorEnum.SHOW_MSG.getCode());
       } else {
          PageResult<SystemAuthAdminListedVo> list = this.iSystemAuthAdminService.list(pageValidate, searchValidate);
          return AjaxResult.success(list);

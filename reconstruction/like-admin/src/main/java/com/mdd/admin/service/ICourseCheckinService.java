@@ -2,6 +2,7 @@ package com.mdd.admin.service;
 
 import com.mdd.admin.validate.checkin.CourseCheckinAuditSearchValidate;
 import com.mdd.admin.validate.checkin.CourseCheckinManualValidate;
+import com.mdd.admin.validate.checkin.CourseCheckinReverseValidate;
 import com.mdd.admin.validate.checkin.CourseCheckinSearchValidate;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.common.core.PageResult;
@@ -24,6 +25,9 @@ public interface ICourseCheckinService {
 
     /** 人工补核销：原因必填、逐人扣券/考勤、幂等、写审计。 */
     Map<String, Object> manual(Integer adminId, CourseCheckinManualValidate manualValidate);
+
+    /** 核销撤销：退回次数券/老课包课时，预约 10→1、场次 1→0，写审计。 */
+    Map<String, Object> reverse(Integer adminId, CourseCheckinReverseValidate reverseValidate);
 
     /** 补核销审计查询：按场次/学员/操作日期筛选。 */
     PageResult<Map<String, Object>> audits(PageValidate pageValidate,
