@@ -99,9 +99,15 @@ public class CourseClassController {
     @PostMapping(value={"/edit"})
     @ApiOperation(value="\u73ed\u7ea7\u7f16\u8f91")
     @Log(title="编辑课程班级")
-    public AjaxResult<Object> edit(@Validated @RequestBody CourseClassUpdateValidate updateValidate) {
-        this.iCourseClassService.edit(updateValidate);
-        return AjaxResult.success();
+    public AjaxResult<Map<String, Object>> edit(@Validated @RequestBody CourseClassUpdateValidate updateValidate) {
+        return AjaxResult.success(this.iCourseClassService.edit(updateValidate));
+    }
+
+    @PostMapping(value={"/regenerateLessons"})
+    @ApiOperation(value="\u6309\u5f53\u524d\u6392\u8bfe\u89c4\u5219\u91cd\u5efa\u672a\u6765\u573a\u6b21")
+    @Log(title="重建课程场次")
+    public AjaxResult<Map<String, Object>> regenerateLessons(@RequestBody Map<String, Integer> map) {
+        return AjaxResult.success(this.iCourseClassService.regenerateLessons(map.get("id")));
     }
 
     @PostMapping(value={"/del"})

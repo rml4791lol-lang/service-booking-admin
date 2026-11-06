@@ -47,6 +47,21 @@ public interface IActivityAdminService {
                                           String keyword, String phone, String studentName,
                                           Integer status, String dateStart, String dateEnd);
 
+    /** 活动报名名单（含支付状态）：一人一行，支持活动/报名状态/支付状态/关键词/时间筛选。 */
+    PageResult<Map<String, Object>> activitySignupList(PageValidate pageValidate, Integer activityId,
+                                                       Integer status, Integer payStatus, String keyword,
+                                                       String dateStart, String dateEnd);
+
+    /** 活动报名名单导出 Excel（列含支付状态），返回文件 URL/文件名/行数。 */
+    Map<String, Object> exportActivitySignups(Integer activityId, Integer status, Integer payStatus,
+                                              String keyword, String dateStart, String dateEnd);
+
+    /**
+     * 后台按报名行取消（审计 #213 C3）：活动未开始且已报名才可操作；
+     * 免费报名直接取消并释放名额，付费报名只生成待审核退款申请（mode=refunding）。
+     */
+    Map<String, Object> cancelActivitySignup(Integer adminId, Integer signupId, String remark);
+
     /** 开班申请聚合列表（按街道+课程类型合并）。 */
     PageResult<Map<String, Object>> applyGroups(PageValidate pageValidate, Integer streetId,
                                                 String courseType, String status);

@@ -69,6 +69,7 @@ import com.mdd.common.mapper.course.CourseLessonMapper;
 import com.mdd.common.mapper.course.CourseRefundMapper;
 import com.mdd.common.mapper.course.UserCourseMapper;
 import com.mdd.common.mapper.refund.RefundTaskMapper;
+import com.mdd.common.service.ActivitySignupCancelService;
 import com.mdd.common.service.CourseConsumeEffectiveService;
 import com.mdd.common.util.ClassScheduleUtil;
 import com.mdd.common.util.CourseBookingUtil;
@@ -79,11 +80,15 @@ import com.mdd.common.util.UserCourseEligibilityUtil;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.annotation.Resource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -91,6 +96,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class CourseRefundServiceImpl
 implements ICourseRefundService {
+    private static final Logger log = LoggerFactory.getLogger(CourseRefundServiceImpl.class);
     @Resource
     CourseRefundMapper courseRefundMapper;
     @Resource
@@ -117,6 +123,8 @@ implements ICourseRefundService {
     CourseLessonMapper courseLessonMapper;
     @Resource
     CourseBookingMapper courseBookingMapper;
+    @Resource
+    ActivitySignupCancelService activitySignupCancelService;
 
     public PageResult<CourseRefundListedVo> list(PageValidate pageValidate, CourseRefundSearchValidate searchValidate) {
         Integer page = pageValidate.getPage_no();
@@ -136,15 +144,20 @@ implements ICourseRefundService {
             queryWrapper.ne("course_class_id", (Object)0);
         }
         IPage<CourseRefund> iPage = this.courseRefundMapper.selectPage((IPage)new Page((long)page.intValue(), (long)limit.intValue()), (Wrapper)queryWrapper);
+        Set<Integer> activityOrderIds = this.activityOrderIds(iPage.getRecords());
         LinkedList<CourseRefundListedVo> list = new LinkedList<CourseRefundListedVo>();
         for (CourseRefund item : iPage.getRecords()) {
             CourseRefundListedVo vo = new CourseRefundListedVo();
             BeanUtils.copyProperties((Object)item, (Object)vo);
             vo.setStatusDesc(this.getStatusDesc(item.getStatus()));
-            // #110 T12：券退款复用 la_course_refund，course_class_id=0 作为来源标记。
-            boolean coupon = item.getCourseClassId() == null || item.getCourseClassId() == 0;
-            vo.setSource(coupon ? "coupon" : "course");
-            vo.setSourceText(coupon ? "券" : "课程");
+            // #110 T12 / #213 C3：course_class_id=0 同时承载券退款与活动退款，
+            // 活动退款按关联订单 activity_id 区分来源，避免后台把活动退款显示成「券」。
+            boolean zeroClass = item.getCourseClassId() == null || item.getCourseClassId() == 0;
+            boolean activity = zeroClass && item.getOrderId() != null
+                    && activityOrderIds.contains(item.getOrderId());
+            boolean coupon = zeroClass && !activity;
+            vo.setSource(activity ? "activity" : (coupon ? "coupon" : "course"));
+            vo.setSourceText(activity ? "活动" : (coupon ? "券" : "课程"));
             vo.setPayAmount(item.getPayAmount() != null ? item.getPayAmount().toString() : "0.00");
             vo.setRefundAmount(item.getRefundAmount() != null ? item.getRefundAmount().toString() : "0.00");
             vo.setAuditTime(TimeUtils.timestampToDate((Long)item.getAuditTime()));
@@ -196,6 +209,15 @@ implements ICourseRefundService {
         this.courseRefundMapper.updateById(refund);
         if (auditValidate.getStatus() == 1) {
             if (refund.getCourseClassId() == null || refund.getCourseClassId() == 0) {
+                RechargeOrder activityOrder = refund.getOrderId() == null || refund.getOrderId() <= 0
+                        ? null : this.rechargeOrderMapper.selectById(refund.getOrderId());
+                if (activityOrder != null && activityOrder.getActivityId() != null
+                        && activityOrder.getActivityId() > 0) {
+                    // #213 C3：活动退款复用 la_course_refund（course_class_id=0），
+                    // 按订单 activity_id 路由到活动履约回滚 + 既有退款通道。
+                    this.settleActivityRefund(refund, adminId, activityOrder);
+                    return;
+                }
                 // #110 T12 券退款：券订单没有 la_user_course，走独立的作废 + 原路退分支。
                 this.settleCouponRefund(refund, adminId);
                 return;
@@ -243,6 +265,84 @@ implements ICourseRefundService {
             // 否则已退费学员仍能按原预约到课/被点名。
             this.cancelFutureBookings(refund, userCourse);
         }
+    }
+
+    /**
+     * #213 C3 活动退款收口：先走既有缴费退款通道（微信 outbox / 钱包同步 / 其它渠道），
+     * 再取消该订单全部报名行、批次置取消并按批次整批释放名额。
+     *
+     * <p>幂等：order.refund_status=1 时跳过外部退款，只做本地回滚（重试补偿）；
+     * 批次状态是名额释放唯一闸门，重复执行不会二次扣减 joined。</p>
+     */
+    private void settleActivityRefund(CourseRefund refund, Integer adminId, RechargeOrder order) {
+        if (order.getDeleteTime() != null
+                || refund.getUserId() == null || !refund.getUserId().equals(order.getUserId())
+                || order.getActivityId() == null || order.getActivityId() <= 0) {
+            throw new OperateException("活动退款申请关联的订单不存在或状态异常");
+        }
+        if (order.getPayStatus() == null || order.getPayStatus() != 1) {
+            throw new OperateException("活动订单未支付，不能退款");
+        }
+        BigDecimal orderAmount = order.getOrderAmount() == null ? BigDecimal.ZERO : order.getOrderAmount();
+        BigDecimal refundAmount = refund.getRefundAmount() == null ? orderAmount : refund.getRefundAmount();
+        if (refundAmount.compareTo(BigDecimal.ZERO) < 0 || refundAmount.compareTo(orderAmount) > 0) {
+            throw new OperateException("活动退款金额不合法");
+        }
+        int refundStatus = order.getRefundStatus() == null ? 0 : order.getRefundStatus();
+        if (refundStatus == 0 && refundAmount.compareTo(BigDecimal.ZERO) > 0) {
+            boolean wechatPaid = order.getPayWay() != null && order.getPayWay() == 2
+                    && StringUtils.isNotEmpty(order.getTransactionId());
+            boolean walletPaid = order.getPayWay() != null && order.getPayWay() == 1;
+            if (wechatPaid) {
+                // 同一退款申请已有任务时直接复用（重试补偿），不再二次放行/二次退款。
+                RefundTask existingTask = this.refundTaskMapper.selectOne(new QueryWrapper<RefundTask>()
+                        .eq("refund_id", refund.getId()).last("limit 1"));
+                if (existingTask == null) {
+                    this.claimOrderForWechatRefund(order);
+                    this.refundTaskService.createForRefund(refund, order);
+                }
+            } else if (walletPaid) {
+                this.financeRechargerService.refund(order.getId(), adminId, refundAmount);
+            } else {
+                // 线下转账/无交易号：与课程/券退款一致，审核即视为退款完成。
+                this.rechargeOrderMapper.update(null, new UpdateWrapper<RechargeOrder>()
+                        .eq("id", order.getId())
+                        .eq("refund_status", 0)
+                        .isNull("delete_time")
+                        .set("refund_status", 1)
+                        .set("update_time", TimeUtils.timestamp()));
+            }
+        }
+        int released = this.activitySignupCancelService.cancelOrderSignups(order.getId());
+        log.info("活动退款审核通过: refundId={} orderId={} activityId={} released={} adminId={}",
+                refund.getId(), order.getId(), order.getActivityId(), released, adminId);
+    }
+
+    /** 批量标记 course_class_id=0 的退款单中，关联订单属于活动订单的集合（用于来源展示）。 */
+    private Set<Integer> activityOrderIds(List<CourseRefund> records) {
+        Set<Integer> result = new HashSet<>();
+        if (records == null || records.isEmpty()) {
+            return result;
+        }
+        Set<Integer> orderIds = new HashSet<>();
+        for (CourseRefund item : records) {
+            if ((item.getCourseClassId() == null || item.getCourseClassId() == 0)
+                    && item.getOrderId() != null && item.getOrderId() > 0) {
+                orderIds.add(item.getOrderId());
+            }
+        }
+        if (orderIds.isEmpty()) {
+            return result;
+        }
+        List<RechargeOrder> orders = this.rechargeOrderMapper.selectList(new QueryWrapper<RechargeOrder>()
+                .select("id", "activity_id")
+                .in("id", orderIds));
+        for (RechargeOrder order : orders) {
+            if (order.getActivityId() != null && order.getActivityId() > 0) {
+                result.add(order.getId());
+            }
+        }
+        return result;
     }
 
     /**

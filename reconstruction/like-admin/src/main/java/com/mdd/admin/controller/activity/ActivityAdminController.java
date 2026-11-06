@@ -189,6 +189,53 @@ public class ActivityAdminController {
                 params.get("remark") == null ? "" : String.valueOf(params.get("remark"))));
     }
 
+    // ---- 活动报名名单（含支付状态） ---------------------------------------
+    // 与异常报名一致：新路由无独立菜单项，沿用页面权限 activity/enroll/list。
+
+    @NotPower
+    @GetMapping(value = "/signup/list")
+    @ApiOperation(value = "活动报名名单（含支付状态）")
+    public AjaxResult<PageResult<Map<String, Object>>> activitySignupList(
+            @Validated PageValidate pageValidate,
+            @RequestParam(value = "activityId", required = false) Integer activityId,
+            @RequestParam(value = "status", required = false) Integer status,
+            @RequestParam(value = "payStatus", required = false) Integer payStatus,
+            @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "dateStart", required = false) String dateStart,
+            @RequestParam(value = "dateEnd", required = false) String dateEnd) {
+        checkEnrollPermission();
+        return AjaxResult.success(iActivityAdminService.activitySignupList(pageValidate, activityId,
+                status, payStatus, keyword, dateStart, dateEnd));
+    }
+
+    @NotPower
+    @Log(title = "取消活动报名")
+    @PostMapping(value = "/enroll/cancel")
+    @ApiOperation(value = "后台取消活动报名（免费释放名额，付费生成退款申请）")
+    public AjaxResult<Map<String, Object>> cancelActivitySignup(@RequestBody Map<String, Object> params) {
+        checkPermission("activity/enroll/cancel");
+        return AjaxResult.success(iActivityAdminService.cancelActivitySignup(
+                LikeAdminThreadLocal.getAdminId(), intValue(params.get("signupId")),
+                params.get("remark") == null ? "" : String.valueOf(params.get("remark"))));
+    }
+
+    @NotPower
+    @Log(title = "导出活动报名名单")
+    @GetMapping(value = "/signup/export")
+    @ApiOperation(value = "导出活动报名名单 Excel（含支付状态）")
+    public AjaxResult<Map<String, Object>> exportActivitySignups(
+            @RequestParam(value = "activityId", required = false) Integer activityId,
+            @RequestParam(value = "status", required = false) Integer status,
+            @RequestParam(value = "payStatus", required = false) Integer payStatus,
+            @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "dateStart", required = false) String dateStart,
+            @RequestParam(value = "dateEnd", required = false) String dateEnd) {
+        checkEnrollPermission();
+        Map<String, Object> result = iActivityAdminService.exportActivitySignups(activityId,
+                status, payStatus, keyword, dateStart, dateEnd);
+        return AjaxResult.success(2, result, ErrorEnum.SHOW_MSG.getCode());
+    }
+
     // ---- 活动管理 CRUD（#186） --------------------------------------------
     // 权限走手写校验（@NotPower）：菜单权限字符串按计划为 activity/activity/*，
     // 而拦截器默认按 URI 派生 activity/*，两者不一致，故显式校验种子里的权限点；

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mdd.admin.mapper.ActivityRosterQueryMapper">
+
+    <!-- 活动报名名单（含支付状态）：一人一行，支付状态取关联订单 -->
+    <sql id="signupFromWhere">
+        FROM la_activity_signup s
+        LEFT JOIN la_activity a ON a.id = s.activity_id
+        LEFT JOIN la_area ar ON ar.id = a.area_id
+        LEFT JOIN la_recharge_order o ON o.id = s.order_id
+        LEFT JOIN la_user u ON u.id = s.user_id
+        LEFT JOIN la_student st ON st.id = s.student_id
+        WHERE 1 = 1
+        <if test="activityId != null">
+            AND s.activity_id = #{activityId}
+        </if>
+        <if test="status != null">
+            AND s.status = #{status}
+        </if>
+        <if test="payStatus != null">
+            <choose>
+                <when test="payStatus == -1">
+                    AND (s.order_id IS NULL OR s.order_id = 0 OR o.id IS NULL)
+                </when>
+                <otherwise>
+                    AND s.order_id &gt; 0 AND o.id IS NOT NULL AND o.pay_status = #{payStatus}
+                </otherwise>
+            </choose>
+        </if>
+        <if test="dateStart != null">
+            AND s.create_time &gt;= #{dateStart}
+        </if>
+        <if test="dateEnd != null">
+            AND s.create_time &lt; #{dateEnd}
+        </if>
+        <if test="keyword != null and keyword != ''">
+            AND (
+                u.mobile LIKE #{keyword}
+                OR u.real_name LIKE #{keyword}
+                OR u.nickname LIKE #{keyword}
+                OR st.name LIKE #{keyword}
+                OR o.sn LIKE #{keyword}
+                OR a.title LIKE #{keyword}
+            )
+        </if>
+    </sql>
+
+    <select id="countSignup" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        <include refid="signupFromWhere"/>
+    </select>
+
+    <select id="pageSignup" resultType="java.util.LinkedHashMap">
+        SELECT
+            s.id AS id,
+            s.activity_id AS activityId,
+            COALESCE(a.title, '') AS activityTitle,
+            COALESCE(a.activity_date, '') AS activityDate,
+            COALESCE(a.time_slot, '') AS activityTime,
+            COALESCE(a.place, '') AS activityPlace,
+            COALESCE(ar.name, '') AS areaName,
+            COALESCE(u.real_name, '') AS realName,
+            COALESCE(u.nickname, '') AS nickname,
+            COALESCE(u.mobile, '') AS parentMobile,
+            s.student_id AS studentId,
+            COALESCE(st.name, '') AS studentName,
+            CAST(s.status AS SIGNED) AS status,
+            COALESCE(s.order_id, 0) AS orderId,
+            COALESCE(o.sn, '') AS orderSn,
+            o.order_amount AS orderAmount,
+            CAST(o.pay_status AS SIGNED) AS payStatus,
+            CAST(o.pay_way AS SIGNED) AS payWay,
+            CAST(o.refund_status AS SIGNED) AS refundStatus,
+            o.pay_time AS payTime,
+            s.create_time AS createTime
+        <include refid="signupFromWhere"/>
+        ORDER BY s.create_time DESC, s.id DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="summarySignup" resultType="java.util.LinkedHashMap">
+        SELECT
+            COUNT(*) AS totalCount,
+            COUNT(DISTINCT CONCAT(s.activity_id, '|', s.student_id)) AS uniqueCount,
+            COUNT(DISTINCT CASE WHEN o.pay_status = 1
+                THEN CONCAT(s.activity_id, '|', s.student_id) END) AS paidCount,
+            COUNT(DISTINCT CASE WHEN s.order_id IS NULL OR s.order_id = 0 OR o.id IS NULL
+                THEN CONCAT(s.activity_id, '|', s.student_id) END) AS freeCount,
+            COUNT(DISTINCT CASE WHEN o.id IS NOT NULL AND o.pay_status = 0
+                THEN CONCAT(s.activity_id, '|', s.student_id) END) AS pendingCount,
+            COUNT(DISTINCT CASE WHEN o.id IS NOT NULL AND o.pay_status = 4
+                THEN CONCAT(s.activity_id, '|', s.student_id) END) AS cancelledCount,
+            ROUND(COALESCE(SUM(CASE WHEN o.pay_status = 1 THEN o.order_amount ELSE 0 END), 0), 2) AS paidAmount
+        <include refid="signupFromWhere"/>
+    </select>
+
+</mapper>

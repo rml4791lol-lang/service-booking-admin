@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.mdd.admin.mapper.ActivityRosterQueryMapper;
 import com.mdd.admin.service.IActivityAdminService;
 import com.mdd.admin.service.IFinanceRechargerService;
 import com.mdd.admin.validate.activity.ActivityCreateValidate;
@@ -25,6 +26,7 @@ import com.mdd.common.entity.Instructor;
 import com.mdd.common.entity.admin.Admin;
 import com.mdd.common.entity.course.CourseClass;
 import com.mdd.common.entity.course.CourseLesson;
+import com.mdd.common.entity.course.CourseRefund;
 import com.mdd.common.entity.region.Area;
 import com.mdd.common.entity.region.Region;
 import com.mdd.common.entity.student.Student;
@@ -44,6 +46,7 @@ import com.mdd.common.mapper.InstructorMapper;
 import com.mdd.common.mapper.admin.AdminMapper;
 import com.mdd.common.mapper.course.CourseClassMapper;
 import com.mdd.common.mapper.course.CourseLessonMapper;
+import com.mdd.common.mapper.course.CourseRefundMapper;
 import com.mdd.common.mapper.region.AreaMapper;
 import com.mdd.common.mapper.region.RegionMapper;
 import com.mdd.common.mapper.student.StudentMapper;
@@ -51,7 +54,9 @@ import com.mdd.common.mapper.user.UserMapper;
 import com.mdd.admin.vo.activity.ActivityEnrollAlertDetailVo;
 import com.mdd.admin.vo.activity.ActivityEnrollAlertListVo;
 import com.mdd.admin.vo.activity.ActivityEnrollAlertSignupVo;
+import com.mdd.admin.vo.activity.ActivitySignupExportVo;
 import com.mdd.common.util.ClassScheduleUtil;
+import com.mdd.common.service.ActivitySignupCancelService;
 import com.mdd.common.util.StringUtils;
 import com.mdd.common.util.TimeUtils;
 import com.mdd.common.util.ToolUtils;
@@ -98,6 +103,7 @@ public class ActivityAdminServiceImpl implements IActivityAdminService {
     private static final int MAX_EXPIRE_DAYS = 365;
     private static final int EXPORT_LIMIT = 10000;
     private static final String DEDUPE_RULE = "同场次 + 手机号 + 学员名";
+    private static final String SIGNUP_DEDUPE_RULE = "同一活动 + 同一学员（一人一行）";
 
     @Resource
     CourseLessonMapper courseLessonMapper;
@@ -135,6 +141,12 @@ public class ActivityAdminServiceImpl implements IActivityAdminService {
     AdminMapper adminMapper;
     @Resource
     IFinanceRechargerService iFinanceRechargerService;
+    @Resource
+    ActivityRosterQueryMapper activityRosterQueryMapper;
+    @Resource
+    CourseRefundMapper courseRefundMapper;
+    @Resource
+    ActivitySignupCancelService activitySignupCancelService;
 
     // ---- 报名链接 ----------------------------------------------------------
 
@@ -574,6 +586,249 @@ public class ActivityAdminServiceImpl implements IActivityAdminService {
         result.put("summary", enrollmentSummary(sessionId, linkId, token, keyword, phone,
                 studentName, status, dateStart, dateEnd));
         return result;
+    }
+
+    // ---- 活动报名名单（含支付状态） ----------------------------------------
+
+    @Override
+    public PageResult<Map<String, Object>> activitySignupList(PageValidate pageValidate, Integer activityId,
+                                                              Integer status, Integer payStatus,
+                                                              String keyword, String dateStart,
+                                                              String dateEnd) {
+        int pageNo = pageValidate.getPage_no() == null || pageValidate.getPage_no() < 1
+                ? 1 : pageValidate.getPage_no();
+        int pageSize = pageValidate.getPage_size() == null || pageValidate.getPage_size() < 1
+                ? 20 : pageValidate.getPage_size();
+        Integer statusFilter = signupStatusFilter(status);
+        Integer payFilter = payStatusFilter(payStatus);
+        String like = likeKeyword(keyword);
+        Long start = dateTimestamp(dateStart, false);
+        Long end = dateTimestamp(dateEnd, true);
+
+        long total = activityRosterQueryMapper.countSignup(activityId, statusFilter, payFilter,
+                like, start, end);
+        List<Map<String, Object>> records = activityRosterQueryMapper.pageSignup(activityId,
+                statusFilter, payFilter, like, start, end, (pageNo - 1) * pageSize, pageSize);
+        List<Map<String, Object>> list = new ArrayList<>();
+        if (records != null) {
+            for (Map<String, Object> record : records) {
+                list.add(activitySignupItem(record));
+            }
+        }
+        attachCancelableState(list);
+        return PageResult.iPageHandle(total, (long) pageNo, (long) pageSize, list,
+                activitySignupSummary(activityId, statusFilter, payFilter, like, start, end,
+                        dateStart, dateEnd));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> cancelActivitySignup(Integer adminId, Integer signupId, String remark) {
+        Map<String, Object> result = activitySignupCancelService.cancelForSignup(signupId, remark);
+        log.info("后台取消活动报名: adminId={} signupId={} activityId={} mode={} refundId={}",
+                adminId, signupId, result.get("activityId"), result.get("mode"), result.get("refundId"));
+        return result;
+    }
+
+    /**
+     * 报名名单按钮态：仅「未开始 + 已报名 + 无待审核退款」可点取消；
+     * 退款审核中单独标记，前端不再提供第二次入口。
+     */
+    private void attachCancelableState(List<Map<String, Object>> list) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        Set<Integer> orderIds = new HashSet<>();
+        for (Map<String, Object> item : list) {
+            Integer orderId = intValue(item.get("orderId"));
+            if (orderId != null && orderId > 0) {
+                orderIds.add(orderId);
+            }
+        }
+        Set<Integer> pendingOrderIds = new HashSet<>();
+        if (!orderIds.isEmpty()) {
+            List<CourseRefund> pendings = courseRefundMapper.selectList(new QueryWrapper<CourseRefund>()
+                    .select("order_id")
+                    .eq("status", 0)
+                    .isNull("delete_time")
+                    .in("order_id", orderIds));
+            for (CourseRefund refund : pendings) {
+                if (refund.getOrderId() != null) {
+                    pendingOrderIds.add(refund.getOrderId());
+                }
+            }
+        }
+        for (Map<String, Object> item : list) {
+            Integer signupStatus = intValue(item.get("status"));
+            Integer orderId = intValue(item.get("orderId"));
+            boolean started = activityStarted(text(item.get("activityDate")));
+            boolean refundPending = orderId != null && pendingOrderIds.contains(orderId);
+            item.put("refundPending", refundPending);
+            item.put("cancelable", signupStatus != null && signupStatus == ActivitySignup.STATUS_PAID
+                    && !started && !refundPending);
+        }
+    }
+
+    private boolean activityStarted(String activityDate) {
+        if (activityDate == null || activityDate.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            return LocalDate.parse(activityDate.trim()).isBefore(LocalDate.now());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @Override
+    public Map<String, Object> exportActivitySignups(Integer activityId, Integer status,
+                                                     Integer payStatus, String keyword,
+                                                     String dateStart, String dateEnd) {
+        Integer statusFilter = signupStatusFilter(status);
+        Integer payFilter = payStatusFilter(payStatus);
+        String like = likeKeyword(keyword);
+        Long start = dateTimestamp(dateStart, false);
+        Long end = dateTimestamp(dateEnd, true);
+        List<Map<String, Object>> records = activityRosterQueryMapper.pageSignup(activityId,
+                statusFilter, payFilter, like, start, end, 0, EXPORT_LIMIT);
+        List<ActivitySignupExportVo> rows = new ArrayList<>();
+        if (records != null) {
+            for (Map<String, Object> record : records) {
+                Map<String, Object> item = activitySignupItem(record);
+                ActivitySignupExportVo vo = new ActivitySignupExportVo();
+                vo.setCreatedAt(text(item.get("createdAt")));
+                vo.setActivityTitle(text(item.get("activityTitle")));
+                vo.setActivityDate(text(item.get("activityDate")));
+                vo.setActivityTime(text(item.get("activityTime")));
+                vo.setActivityPlace(text(item.get("activityPlace")));
+                vo.setAreaName(text(item.get("areaName")));
+                vo.setParentName(text(item.get("parentName")));
+                vo.setParentMobile(text(item.get("parentMobile")));
+                vo.setStudentName(text(item.get("studentName")));
+                vo.setStatusText(text(item.get("statusText")));
+                vo.setPayStatusText(text(item.get("payStatusText")));
+                vo.setOrderSn(text(item.get("orderSn")));
+                BigDecimal amount = item.get("orderAmount") instanceof BigDecimal
+                        ? (BigDecimal) item.get("orderAmount") : BigDecimal.ZERO;
+                vo.setOrderAmount(amount.toPlainString());
+                vo.setPayTime(text(item.get("payTime")));
+                rows.add(vo);
+            }
+        }
+
+        String fileName = "activity-roster-" + LocalDateTime.now().format(FILENAME_FMT)
+                + "-" + ToolUtils.makeUUID().substring(0, 6) + ".xlsx";
+        String folderPath = "/excel/export/" + TimeUtils.timestampToDay(TimeUtils.timestamp()) + "/";
+        String path = folderPath + fileName;
+        String filePath = YmlUtils.get("like.upload-directory") + path;
+        File folder = new File(YmlUtils.get("like.upload-directory") + folderPath);
+        if (!folder.exists() && !folder.mkdirs()) {
+            throw new OperateException("创建导出目录失败");
+        }
+        EasyExcel.write(filePath).head(ActivitySignupExportVo.class)
+                .excelType(ExcelTypeEnum.XLSX).sheet("活动报名名单").doWrite(rows);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("url", UrlUtils.toAdminAbsoluteUrl(path));
+        result.put("fileName", fileName);
+        result.put("rowCount", rows.size());
+        result.put("summary", activitySignupSummary(activityId, statusFilter, payFilter, like,
+                start, end, dateStart, dateEnd));
+        return result;
+    }
+
+    private Map<String, Object> activitySignupItem(Map<String, Object> row) {
+        Integer rawPayStatus = intValue(row.get("payStatus"));
+        Integer payStatus = rawPayStatus == null ? -1 : rawPayStatus;
+        String realName = text(row.get("realName"));
+        String nickname = text(row.get("nickname"));
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", intValue(row.get("id")));
+        item.put("activityId", intValue(row.get("activityId")));
+        item.put("activityTitle", text(row.get("activityTitle")));
+        item.put("activityDate", text(row.get("activityDate")));
+        item.put("activityTime", text(row.get("activityTime")));
+        item.put("activityPlace", text(row.get("activityPlace")));
+        item.put("areaName", text(row.get("areaName")));
+        item.put("parentName", realName.isEmpty() ? nickname : realName);
+        item.put("parentMobile", text(row.get("parentMobile")));
+        item.put("studentId", intValue(row.get("studentId")));
+        item.put("studentName", text(row.get("studentName")));
+        item.put("status", intValue(row.get("status")));
+        item.put("statusText", signupStatusText(intValue(row.get("status"))));
+        item.put("orderId", intValue(row.get("orderId")) == null ? 0 : intValue(row.get("orderId")));
+        item.put("orderSn", text(row.get("orderSn")));
+        item.put("orderAmount", row.get("orderAmount") == null ? BigDecimal.ZERO : row.get("orderAmount"));
+        item.put("payStatus", payStatus);
+        item.put("payStatusText", payStatusText(payStatus));
+        int payWay = intValue(row.get("payWay")) == null ? 0 : intValue(row.get("payWay"));
+        item.put("payWay", payWay);
+        item.put("payWayText", payWay > 0 ? PaymentEnum.getPayWayMsg(payWay) : "");
+        item.put("refundStatus", intValue(row.get("refundStatus")) == null
+                ? 0 : intValue(row.get("refundStatus")));
+        item.put("payTime", formatTime(longValue(row.get("payTime"))));
+        item.put("createdAt", formatTime(longValue(row.get("createTime"))));
+        item.put("createTime", longValue(row.get("createTime")));
+        return item;
+    }
+
+    private Map<String, Object> activitySignupSummary(Integer activityId, Integer status,
+                                                      Integer payStatus, String keyword,
+                                                      Long dateStart, Long dateEnd,
+                                                      String dateStartText, String dateEndText) {
+        Map<String, Object> agg = activityRosterQueryMapper.summarySignup(activityId, status,
+                payStatus, keyword, dateStart, dateEnd);
+        if (agg == null) {
+            agg = new HashMap<>();
+        }
+        long pending = longValue(agg.get("pendingCount"));
+        long cancelled = longValue(agg.get("cancelledCount"));
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("totalCount", longValue(agg.get("totalCount")));
+        summary.put("uniqueCount", longValue(agg.get("uniqueCount")));
+        summary.put("paidCount", longValue(agg.get("paidCount")));
+        summary.put("unpaidCount", pending + cancelled);
+        summary.put("pendingCount", pending);
+        summary.put("cancelledCount", cancelled);
+        summary.put("freeCount", longValue(agg.get("freeCount")));
+        summary.put("paidAmount", agg.get("paidAmount") == null ? BigDecimal.ZERO : agg.get("paidAmount"));
+        summary.put("dedupeRule", SIGNUP_DEDUPE_RULE);
+        summary.put("dateStart", trimToEmpty(dateStartText));
+        summary.put("dateEnd", trimToEmpty(dateEndText));
+        return summary;
+    }
+
+    private Integer signupStatusFilter(Integer status) {
+        if (status == null) {
+            return null;
+        }
+        return status == 0 || status == 1 || status == 3 ? status : null;
+    }
+
+    private Integer payStatusFilter(Integer payStatus) {
+        if (payStatus == null) {
+            return null;
+        }
+        return payStatus == -1 || payStatus == 0 || payStatus == 1 || payStatus == 4
+                ? payStatus : null;
+    }
+
+    private String likeKeyword(String keyword) {
+        String text = trimToEmpty(keyword);
+        return text.isEmpty() ? null : "%" + text + "%";
+    }
+
+    private String payStatusText(Integer payStatus) {
+        if (payStatus == null || payStatus == -1) {
+            return "免费";
+        }
+        if (payStatus == 1) {
+            return "已支付";
+        }
+        if (payStatus == 4) {
+            return "已取消";
+        }
+        return "待支付";
     }
 
     private QueryWrapper<Enrollment> enrollmentQuery(Integer sessionId, Integer linkId, String token,

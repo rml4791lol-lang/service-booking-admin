@@ -103,12 +103,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import javax.annotation.Resource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class CourseClassServiceImpl
 implements ICourseClassService {
+    private static final Logger log = LoggerFactory.getLogger(CourseClassServiceImpl.class);
+
     @Resource
     CourseClassMapper courseClassMapper;
     @Resource
@@ -349,12 +354,17 @@ implements ICourseClassService {
         this.generateLessons(courseClass);
     }
 
-    public void edit(CourseClassUpdateValidate updateValidate) {
+    /**
+     * 编辑课程。排课规则（模式/规则/周几/时段）变化时，在同一事务内重建未来场次：
+     * 先落库新规则，再按新规则删除「今天之后、无有效预约、待上课」的场次并补排；
+     * 有预约的场次保留不动。返回重建统计供后台 toast 展示。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> edit(CourseClassUpdateValidate updateValidate) {
         this.validateAgeRange(updateValidate.getAgeMin(), updateValidate.getAgeMax());
-        String newScheduleRules;
         CourseClass courseClass = (CourseClass)this.courseClassMapper.selectById((Serializable)updateValidate.getId());
         if (courseClass == null || courseClass.getIsDelete() == 1) {
-            throw new OperateException("\u73ed\u7ea7\u5df2\u88ab\u5220\u9664");
+            throw new OperateException("班级已被删除");
         }
         String oldStartDate = courseClass.getStartDate() != null ? TimeUtils.timestampToDay((Long)courseClass.getStartDate().longValue()) : "";
         String newStartDate = updateValidate.getStartDate() == null ? "" : updateValidate.getStartDate();
@@ -367,9 +377,10 @@ implements ICourseClassService {
         Integer oldScheduleMode = courseClass.getScheduleMode() != null ? courseClass.getScheduleMode() : 0;
         Integer newScheduleMode = updateValidate.getScheduleMode() != null ? updateValidate.getScheduleMode() : 0;
         String oldScheduleRules = courseClass.getScheduleRules() == null ? "" : courseClass.getScheduleRules();
-        String string = newScheduleRules = updateValidate.getScheduleRules() == null ? "" : updateValidate.getScheduleRules();
-        if (!(Objects.equals(oldStartDate, newStartDate) && Objects.equals(oldWeekDays, newWeekDays) && Objects.equals(oldTotalLessons, newTotalLessons) && Objects.equals(oldScheduleMode, newScheduleMode))) {
-            throw new OperateException("\u5f53\u524d\u4ec5\u652f\u6301\u4fee\u6539\u4e0a\u8bfe\u65f6\u95f4\uff0c\u5f00\u8bfe\u65e5\u671f\u3001\u4e0a\u8bfe\u5468\u671f\u3001\u603b\u8bfe\u8282\u6570\u6682\u4e0d\u5141\u8bb8\u7f16\u8f91\u3002");
+        String newScheduleRules = updateValidate.getScheduleRules() == null ? "" : updateValidate.getScheduleRules();
+        // 开课日期/总课节数不在本票范围：改动会影响已生成的历史场次，仍明确拒绝。
+        if (!(Objects.equals(oldStartDate, newStartDate) && Objects.equals(oldTotalLessons, newTotalLessons))) {
+            throw new OperateException("开课日期、总课节数暂不允许编辑（会影响已生成场次）。");
         }
         ClassScheduleUtil.CourseClassScheduleInput scheduleInput = this.buildScheduleInput(newScheduleMode, newScheduleRules, newWeekDays, newTimeSlot);
         try {
@@ -405,7 +416,21 @@ implements ICourseClassService {
         }
         courseClass.setUpdateTime(Integer.valueOf(TimeUtils.timestamp().intValue()));
         this.courseClassMapper.updateById(courseClass);
-        this.syncPendingLessonTimeSlots(courseClass, oldScheduleMode, oldTimeSlot, oldScheduleRules, scheduleInput.getScheduleMode(), scheduleInput.getTimeSlot(), scheduleInput.getScheduleRules());
+
+        boolean scheduleChanged = this.isScheduleChanged(oldScheduleMode, oldScheduleRules, oldWeekDays, oldTimeSlot, scheduleInput);
+        LinkedHashMap<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("regenerated", scheduleChanged);
+        if (scheduleChanged) {
+            // 未来场次交给重建统一处理（含时段），避免 syncPendingLessonTimeSlots 改动「有预约保留」的场次。
+            result.putAll(this.regenerateFutureLessons(courseClass));
+        } else {
+            result.putAll(this.emptyRegenerateStats(0));
+            this.syncPendingLessonTimeSlots(courseClass, oldScheduleMode, oldTimeSlot, oldScheduleRules, scheduleInput.getScheduleMode(), scheduleInput.getTimeSlot(), scheduleInput.getScheduleRules());
+        }
+        log.info("课程编辑完成: classId={} scheduleChanged={} deleted={} created={} kept={} skipped={}",
+                courseClass.getId(), scheduleChanged, result.get("deleted"), result.get("created"),
+                result.get("kept"), result.get("skipped"));
+        return result;
     }
 
     public void del(Integer id) {
@@ -625,23 +650,262 @@ implements ICourseClassService {
         return result;
     }
 
-    private void generateLessons(CourseClass courseClass) {
+    /**
+     * 手动重建指定课程的未来场次（后台行内「重建场次」按钮）。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> regenerateLessons(Integer courseClassId) {
+        if (courseClassId == null || courseClassId <= 0) {
+            throw new OperateException("参数错误");
+        }
+        CourseClass courseClass = (CourseClass)this.courseClassMapper.selectOne(new QueryWrapper<CourseClass>().eq("id", (Object)courseClassId).eq("is_delete", (Object)0).last("limit 1"));
+        if (courseClass == null) {
+            throw new OperateException("课程不存在或已删除");
+        }
+        Map<String, Object> stats = this.regenerateFutureLessons(courseClass);
+        log.info("课程场次手动重建: classId={} deleted={} created={} kept={} skipped={}",
+                courseClassId, stats.get("deleted"), stats.get("created"), stats.get("kept"), stats.get("skipped"));
+        return stats;
+    }
+
+    /**
+     * 重建未来场次（编辑课程自动触发 / 手动接口共用）。
+     *
+     * 规则：
+     * 1. 排课计算复用 {@link #buildScheduleList(CourseClass)}，与新增课程时的 generateLessons 完全同源；
+     *    只取今天及以后、且不晚于课程结束日期（end_date 为空时以第 total_lessons 节为结束）的应排课次。
+     * 2. 只处理 lesson_date &gt; 今天、status=0、非临时加课（lesson_type=0）的场次；
+     *    有有效预约（la_course_booking.status&lt;&gt;3）的场次保留不动，计入 kept。
+     * 3. 无预约场次中，日期+时段已在应排计划里的保留（重复调用不再删了又建，保证幂等）；
+     *    不在新计划里的删除，计入 deleted。
+     * 4. 应排计划里尚不存在的场次插入，已存在的跳过并计入 skipped；
+     *    新场次课次序号优先沿用排课序列号，与保留场次冲突时顺延，避免课次重复。
+     */
+    private Map<String, Object> regenerateFutureLessons(CourseClass courseClass) {
+        String today = TimeUtils.timestampToDate(TimeUtils.timestamp(), "yyyy-MM-dd");
+        int now = TimeUtils.timestamp().intValue();
+        List<CourseLesson> lessons = this.courseLessonMapper.selectList(
+                new QueryWrapper<CourseLesson>().eq("class_id", (Object)courseClass.getId()).orderByAsc("id"));
+        Map<Integer, Integer> bookingCountMap = this.validBookingCountByLesson(courseClass.getId());
+
+        List<Map<String, Object>> planned = this.futureSchedule(courseClass, today);
+        Set<String> plannedKeys = new HashSet<String>();
+        for (Map<String, Object> schedule : planned) {
+            plannedKeys.add(this.lessonKey(String.valueOf(schedule.get("date")), schedule.get("timeSlot") == null ? "" : String.valueOf(schedule.get("timeSlot"))));
+        }
+        if (planned.isEmpty() && this.hasRebuildableFutureLesson(lessons, today)) {
+            // 排课规则为空/失效时宁可不动，也不要把未来场次删空
+            throw new OperateException("当前排课规则未生成任何未来场次，已取消重建");
+        }
+
+        List<Integer> deleteIds = new ArrayList<Integer>();
+        int kept = 0;
+        for (CourseLesson lesson : lessons) {
+            String date = lesson.getLessonDate() == null ? "" : lesson.getLessonDate();
+            if (date.compareTo(today) <= 0) {
+                // 今天及以前的场次已发生/正在进行，不参与重建
+                continue;
+            }
+            if (lesson.getStatus() == null || lesson.getStatus() != 0) {
+                // 已结课/已取消的场次保持原样
+                continue;
+            }
+            if (lesson.getLessonType() != null && lesson.getLessonType() == 1) {
+                // 临时加课由后台单独维护，不随排课规则重建
+                continue;
+            }
+            Integer bookingCount = bookingCountMap.get(lesson.getId());
+            if (bookingCount != null && bookingCount > 0) {
+                kept++;
+                continue;
+            }
+            if (!plannedKeys.contains(this.lessonKey(date, lesson.getTimeSlot()))) {
+                deleteIds.add(lesson.getId());
+            }
+        }
+
+        int deleted = 0;
+        if (!deleteIds.isEmpty()) {
+            deleted = this.courseLessonMapper.deleteBatchIds(deleteIds);
+        }
+
+        // 剩余场次（含保留场次与历史场次）日期+时段、课次序号占用表
+        Set<Integer> deletedIdSet = new HashSet<Integer>(deleteIds);
+        Set<String> occupied = new HashSet<String>();
+        Set<Integer> usedLessonNos = new HashSet<Integer>();
+        int maxLessonNo = 0;
+        for (CourseLesson lesson : lessons) {
+            if (deletedIdSet.contains(lesson.getId())) {
+                continue;
+            }
+            occupied.add(this.lessonKey(lesson.getLessonDate(), lesson.getTimeSlot()));
+            if (lesson.getLessonNo() != null && lesson.getLessonNo() > 0) {
+                usedLessonNos.add(lesson.getLessonNo());
+                maxLessonNo = Math.max(maxLessonNo, lesson.getLessonNo());
+            }
+        }
+
+        int created = 0;
+        int skipped = 0;
+        for (Map<String, Object> schedule : planned) {
+            String key = this.lessonKey(String.valueOf(schedule.get("date")), schedule.get("timeSlot") == null ? "" : String.valueOf(schedule.get("timeSlot")));
+            if (!occupied.add(key)) {
+                skipped++;
+                continue;
+            }
+            Integer lessonNo = ParamUtils.intOrDefault(schedule.get("lessonNo"), 0, "课次序号");
+            if (lessonNo <= 0 || usedLessonNos.contains(lessonNo)) {
+                lessonNo = ++maxLessonNo;
+            } else {
+                maxLessonNo = Math.max(maxLessonNo, lessonNo);
+            }
+            usedLessonNos.add(lessonNo);
+            this.insertLesson(courseClass, schedule, lessonNo, now);
+            created++;
+        }
+        return this.regenerateStats(deleted, created, kept, skipped);
+    }
+
+    /**
+     * 当前排课规则下「今天及以后」的应排课次；课程有 end_date 时只取到结束日期。
+     */
+    private List<Map<String, Object>> futureSchedule(CourseClass courseClass, String today) {
+        List<Map<String, Object>> scheduleList = this.buildScheduleList(courseClass);
+        String endDate = courseClass.getEndDate() != null && courseClass.getEndDate() > 0
+                ? TimeUtils.timestampToDate(courseClass.getEndDate().longValue(), "yyyy-MM-dd") : "";
+        List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
+        for (Map<String, Object> schedule : scheduleList) {
+            Object dateValue = schedule.get("date");
+            if (dateValue == null) {
+                continue;
+            }
+            String date = String.valueOf(dateValue);
+            if (date.compareTo(today) < 0) {
+                continue;
+            }
+            if (!endDate.isEmpty() && date.compareTo(endDate) > 0) {
+                continue;
+            }
+            result.add(schedule);
+        }
+        return result;
+    }
+
+    /** 是否存在可被重建删除的未来场次（用于排课规则为空时判断是否要中止）。 */
+    private boolean hasRebuildableFutureLesson(List<CourseLesson> lessons, String today) {
+        for (CourseLesson lesson : lessons) {
+            String date = lesson.getLessonDate() == null ? "" : lesson.getLessonDate();
+            if (date.compareTo(today) <= 0) {
+                continue;
+            }
+            if (lesson.getStatus() == null || lesson.getStatus() != 0) {
+                continue;
+            }
+            if (lesson.getLessonType() != null && lesson.getLessonType() == 1) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** 有效预约数（status&lt;&gt;3）按场次汇总，一次查询避免逐场 N+1。 */
+    private Map<Integer, Integer> validBookingCountByLesson(Integer courseClassId) {
+        HashMap<Integer, Integer> map = new HashMap<Integer, Integer>();
+        List<Map<String, Object>> rows = this.courseBookingMapper.selectMaps(new QueryWrapper<CourseBooking>()
+                .select("lesson_id AS lessonId", "COUNT(*) AS total")
+                .eq("course_class_id", (Object)courseClassId)
+                .ne("status", (Object)3)
+                .groupBy("lesson_id"));
+        for (Map<String, Object> row : rows) {
+            Object lessonId = row.containsKey("lessonId") ? row.get("lessonId") : row.get("lesson_id");
+            Object total = row.containsKey("total") ? row.get("total") : row.get("cnt");
+            if (lessonId != null && total instanceof Number) {
+                map.put(((Number)lessonId).intValue(), ((Number)total).intValue());
+            }
+        }
+        return map;
+    }
+
+    /** 排课字段是否变化：模式/周几/时段/规则任一不同即视为需要重建。 */
+    private boolean isScheduleChanged(Integer oldMode, String oldRules, String oldWeekDays, String oldTimeSlot,
+                                      ClassScheduleUtil.CourseClassScheduleInput input) {
+        Integer newMode = input.getScheduleMode() == null ? 0 : input.getScheduleMode();
+        if (!Objects.equals(oldMode, newMode)) {
+            return true;
+        }
+        if (!Objects.equals(this.trimToEmpty(oldTimeSlot), this.trimToEmpty(input.getTimeSlot()))) {
+            return true;
+        }
+        if (!Objects.equals(this.parseWeekDaySet(oldWeekDays), this.parseWeekDaySet(input.getWeekDays()))) {
+            return true;
+        }
+        return !Objects.equals(ClassScheduleUtil.toTimeSlotMap(oldRules), ClassScheduleUtil.toTimeSlotMap(input.getScheduleRules()));
+    }
+
+    private Set<Integer> parseWeekDaySet(String weekDays) {
+        HashSet<Integer> days = new HashSet<Integer>();
+        if (weekDays == null) {
+            return days;
+        }
+        for (int i = 0; i < weekDays.length(); i++) {
+            char ch = weekDays.charAt(i);
+            if (ch >= '1' && ch <= '7') {
+                days.add(Integer.valueOf(ch - '0'));
+            }
+        }
+        return days;
+    }
+
+    private String trimToEmpty(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private String lessonKey(String lessonDate, String timeSlot) {
+        return this.trimToEmpty(lessonDate) + "#" + this.trimToEmpty(timeSlot);
+    }
+
+    private LinkedHashMap<String, Object> regenerateStats(int deleted, int created, int kept, int skipped) {
+        LinkedHashMap<String, Object> stats = new LinkedHashMap<String, Object>();
+        stats.put("deleted", Integer.valueOf(deleted));
+        stats.put("created", Integer.valueOf(created));
+        stats.put("kept", Integer.valueOf(kept));
+        stats.put("skipped", Integer.valueOf(skipped));
+        return stats;
+    }
+
+    private LinkedHashMap<String, Object> emptyRegenerateStats(int kept) {
+        return this.regenerateStats(0, 0, kept, 0);
+    }
+
+    /** 按课程当前排课字段生成完整排课序列（新增与重建共用，禁止复制生成逻辑）。 */
+    private List<Map<String, Object>> buildScheduleList(CourseClass courseClass) {
         Integer totalLessons = courseClass.getTotalLessons() != null ? courseClass.getTotalLessons() : 300;
         Integer scheduleMode = courseClass.getScheduleMode() != null ? courseClass.getScheduleMode() : 0;
-        List<Map<String, Object>> scheduleList = scheduleMode == 1 ? LessonScheduleUtil.generateSchedule((Integer)courseClass.getStartDate(), (Integer)totalLessons, (Map)ClassScheduleUtil.toTimeSlotMap((String)courseClass.getScheduleRules())) : LessonScheduleUtil.generateSchedule((Integer)courseClass.getStartDate(), (Integer)totalLessons, (String)courseClass.getWeekDays(), (String)courseClass.getTimeSlot());
+        return scheduleMode == 1
+                ? LessonScheduleUtil.generateSchedule((Integer)courseClass.getStartDate(), (Integer)totalLessons, (Map)ClassScheduleUtil.toTimeSlotMap((String)courseClass.getScheduleRules()))
+                : LessonScheduleUtil.generateSchedule((Integer)courseClass.getStartDate(), (Integer)totalLessons, (String)courseClass.getWeekDays(), (String)courseClass.getTimeSlot());
+    }
+
+    /** 插入单节课节；lessonNo 由调用方决定（新增用排课序列号，重建做冲突顺延）。 */
+    private void insertLesson(CourseClass courseClass, Map<String, Object> schedule, Integer lessonNo, int now) {
+        CourseLesson lesson = new CourseLesson();
+        lesson.setClassId(courseClass.getId());
+        lesson.setLessonNo(lessonNo);
+        lesson.setLessonDate(String.valueOf(schedule.get("date")));
+        lesson.setWeekDay(ParamUtils.intOrDefault(schedule.get("weekDay"), 0, "星期"));
+        lesson.setTimeSlot(schedule.get("timeSlot") != null ? String.valueOf(schedule.get("timeSlot")) : "");
+        lesson.setCoachId(Integer.valueOf(courseClass.getInstructorId() != null ? courseClass.getInstructorId() : 0));
+        lesson.setStatus(Integer.valueOf(0));
+        lesson.setCreateTime(Integer.valueOf(now));
+        lesson.setUpdateTime(Integer.valueOf(now));
+        this.courseLessonMapper.insert(lesson);
+    }
+
+    private void generateLessons(CourseClass courseClass) {
         int now = TimeUtils.timestamp().intValue();
-        for (Map sch : scheduleList) {
-            CourseLesson lesson = new CourseLesson();
-            lesson.setClassId(courseClass.getId());
-            lesson.setLessonNo(ParamUtils.intOrDefault(sch.get("lessonNo"), 0, "课次序号"));
-            lesson.setLessonDate(sch.get("date").toString());
-            lesson.setWeekDay(ParamUtils.intOrDefault(sch.get("weekDay"), 0, "星期"));
-            lesson.setTimeSlot(sch.get("timeSlot") != null ? sch.get("timeSlot").toString() : "");
-            lesson.setCoachId(Integer.valueOf(courseClass.getInstructorId() != null ? courseClass.getInstructorId() : 0));
-            lesson.setStatus(Integer.valueOf(0));
-            lesson.setCreateTime(Integer.valueOf(now));
-            lesson.setUpdateTime(Integer.valueOf(now));
-            this.courseLessonMapper.insert(lesson);
+        for (Map<String, Object> schedule : this.buildScheduleList(courseClass)) {
+            this.insertLesson(courseClass, schedule, ParamUtils.intOrDefault(schedule.get("lessonNo"), 0, "课次序号"), now);
         }
     }
 

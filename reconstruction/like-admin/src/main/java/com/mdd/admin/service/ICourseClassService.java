@@ -28,7 +28,9 @@ public interface ICourseClassService {
 
     public void add(CourseClassCreateValidate var1);
 
-    public void edit(CourseClassUpdateValidate var1);
+    public Map<String, Object> edit(CourseClassUpdateValidate var1);
+
+    public Map<String, Object> regenerateLessons(Integer var1);
 
     public void del(Integer var1);
 
