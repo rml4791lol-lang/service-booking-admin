@@ -44,6 +44,7 @@ import com.mdd.common.mapper.course.CourseClassMapper;
 import com.mdd.common.mapper.course.CourseReviewMapper;
 import com.mdd.common.mapper.user.UserMapper;
 import com.mdd.common.util.ParamUtils;
+import com.mdd.common.util.PageUtils;
 import com.mdd.common.util.TimeUtils;
 import com.mdd.common.util.UrlUtils;
 import io.swagger.annotations.Api;
@@ -84,6 +85,8 @@ public class CourseReviewController {
                                    @RequestParam(required=false) Integer instructorId,
                                    @RequestParam(required=false) Integer courseClassId,
                                    @RequestParam(required=false) String keyword) {
+        pageNo = PageUtils.pageNo(pageNo);
+        pageSize = PageUtils.pageSize(pageSize);
         QueryWrapper<CourseReview> wrapper = new QueryWrapper<CourseReview>().isNull("delete_time").orderByDesc("id");
         if (instructorId != null && instructorId > 0) {
             wrapper.eq("instructor_id", (Object)instructorId);

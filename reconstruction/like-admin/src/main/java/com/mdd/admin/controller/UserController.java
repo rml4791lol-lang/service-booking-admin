@@ -24,6 +24,7 @@ import com.mdd.common.enums.ErrorEnum;
 import com.mdd.common.exception.LoginException;
 import com.mdd.common.mapper.student.StudentMapper;
 import com.mdd.common.service.PhotoAuthorizationService;
+import com.mdd.common.util.PageUtils;
 import com.mdd.common.util.StringUtils;
 import com.mdd.common.validator.annotation.IDMust;
 import io.swagger.annotations.Api;
@@ -209,6 +210,8 @@ public class UserController {
       @RequestParam(value = "pageNo",defaultValue = "1") Integer pageNo,
       @RequestParam(value = "pageSize",defaultValue = "20") Integer pageSize
    ) {
+      pageNo = PageUtils.pageNo(pageNo);
+      pageSize = PageUtils.pageSize(pageSize);
       return AjaxResult.success(this.userCourseAccountService.getLessonRecords(userId, courseClassId, pageNo, pageSize));
    }
 }

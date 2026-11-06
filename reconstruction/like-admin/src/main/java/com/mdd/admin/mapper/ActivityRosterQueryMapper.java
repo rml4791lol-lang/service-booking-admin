@@ -3,6 +3,7 @@ package com.mdd.admin.mapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
@@ -35,4 +36,15 @@ public interface ActivityRosterQueryMapper {
                                       @Param("keyword") String keyword,
                                       @Param("dateStart") Long dateStart,
                                       @Param("dateEnd") Long dateEnd);
+
+    /**
+     * 已支付金额：同一订单可能包含多名学员（名单一人一行），必须按订单去重求和，
+     * 不能对报名行 SUM(order_amount) 把一笔订单金额重复累计。
+     */
+    BigDecimal sumPaidOrderAmount(@Param("activityId") Integer activityId,
+                                  @Param("status") Integer status,
+                                  @Param("payStatus") Integer payStatus,
+                                  @Param("keyword") String keyword,
+                                  @Param("dateStart") Long dateStart,
+                                  @Param("dateEnd") Long dateEnd);
 }

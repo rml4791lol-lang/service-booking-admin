@@ -775,6 +775,8 @@ public class ActivityAdminServiceImpl implements IActivityAdminService {
         }
         long pending = longValue(agg.get("pendingCount"));
         long cancelled = longValue(agg.get("cancelledCount"));
+        BigDecimal paidAmount = activityRosterQueryMapper.sumPaidOrderAmount(activityId, status,
+                payStatus, keyword, dateStart, dateEnd);
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("totalCount", longValue(agg.get("totalCount")));
         summary.put("uniqueCount", longValue(agg.get("uniqueCount")));
@@ -783,7 +785,7 @@ public class ActivityAdminServiceImpl implements IActivityAdminService {
         summary.put("pendingCount", pending);
         summary.put("cancelledCount", cancelled);
         summary.put("freeCount", longValue(agg.get("freeCount")));
-        summary.put("paidAmount", agg.get("paidAmount") == null ? BigDecimal.ZERO : agg.get("paidAmount"));
+        summary.put("paidAmount", paidAmount == null ? BigDecimal.ZERO : paidAmount);
         summary.put("dedupeRule", SIGNUP_DEDUPE_RULE);
         summary.put("dateStart", trimToEmpty(dateStartText));
         summary.put("dateEnd", trimToEmpty(dateEndText));

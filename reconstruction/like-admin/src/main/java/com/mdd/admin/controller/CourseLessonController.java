@@ -54,6 +54,7 @@ import com.mdd.common.entity.course.CourseLessonLog;
 import com.mdd.common.entity.course.UserCourse;
 import com.mdd.common.entity.student.Student;
 import com.mdd.common.entity.user.User;
+import com.mdd.common.util.PageUtils;
 import com.mdd.common.exception.OperateException;
 import com.mdd.common.mapper.InstructorMapper;
 import com.mdd.common.mapper.course.CourseBookingMapper;
@@ -110,6 +111,8 @@ public class CourseLessonController {
     @GetMapping(value={"/list"})
     @ApiOperation(value="\u8bfe\u5802\u603b\u7ed3\u5217\u8868")
     public AjaxResult<Object> list(@RequestParam(value="page_no", defaultValue="1") Integer pageNo, @RequestParam(value="page_size", defaultValue="20") Integer pageSize, @RequestParam(value="courseClassId", required=false) Integer courseClassId, @RequestParam(value="instructorId", required=false) Integer instructorId, @RequestParam(value="keyword", required=false) String keyword) {
+        pageNo = PageUtils.pageNo(pageNo);
+        pageSize = PageUtils.pageSize(pageSize);
         IPage<CourseLessonLog> page = new Page<CourseLessonLog>((long)pageNo.intValue(), (long)pageSize.intValue());
         QueryWrapper<CourseLessonLog> queryWrapper = new QueryWrapper<CourseLessonLog>();
         if (courseClassId != null && courseClassId > 0) {
@@ -183,6 +186,8 @@ public class CourseLessonController {
     @GetMapping(value={"/lessons"})
     @ApiOperation(value="\u8bfe\u65f6\u5217\u8868")
     public AjaxResult<Object> lessons(@RequestParam(value="classId") Integer classId, @RequestParam(value="page_no", defaultValue="1") Integer pageNo, @RequestParam(value="page_size", defaultValue="50") Integer pageSize, @RequestParam(value="status", required=false) Integer status) {
+        pageNo = PageUtils.pageNo(pageNo);
+        pageSize = PageUtils.pageSize(pageSize);
         IPage<CourseLesson> page = new Page<CourseLesson>((long)pageNo.intValue(), (long)pageSize.intValue());
         QueryWrapper<CourseLessonLog> queryWrapper = new QueryWrapper<CourseLessonLog>();
         queryWrapper.eq("class_id", (Object)classId);

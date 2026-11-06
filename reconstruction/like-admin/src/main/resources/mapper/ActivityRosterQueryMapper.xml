@@ -90,9 +90,18 @@
             COUNT(DISTINCT CASE WHEN o.id IS NOT NULL AND o.pay_status = 0
                 THEN CONCAT(s.activity_id, '|', s.student_id) END) AS pendingCount,
             COUNT(DISTINCT CASE WHEN o.id IS NOT NULL AND o.pay_status = 4
-                THEN CONCAT(s.activity_id, '|', s.student_id) END) AS cancelledCount,
-            ROUND(COALESCE(SUM(CASE WHEN o.pay_status = 1 THEN o.order_amount ELSE 0 END), 0), 2) AS paidAmount
+                THEN CONCAT(s.activity_id, '|', s.student_id) END) AS cancelledCount
         <include refid="signupFromWhere"/>
+    </select>
+
+    <!-- 已支付金额按订单去重：同一订单多名学员在名单里是多行，SUM(order_amount) 会重复累计。 -->
+    <select id="sumPaidOrderAmount" resultType="java.math.BigDecimal">
+        SELECT ROUND(COALESCE(SUM(t.order_amount), 0), 2)
+        FROM (
+            SELECT DISTINCT o.id AS id, o.order_amount AS order_amount
+            <include refid="signupFromWhere"/>
+            AND o.pay_status = 1
+        ) t
     </select>
 
 </mapper>

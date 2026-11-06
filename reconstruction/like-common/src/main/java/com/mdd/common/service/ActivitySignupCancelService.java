@@ -139,7 +139,7 @@ public class ActivitySignupCancelService {
         List<ActivitySignup> active = activitySignupMapper.selectList(new QueryWrapper<ActivitySignup>()
                 .eq("user_id", userId)
                 .eq("activity_id", activityId)
-                .eq("status", STATUS_PAID)
+                .ne("status", STATUS_CANCELLED)
                 .orderByAsc("id"));
         if (active.isEmpty()) {
             Long any = activitySignupMapper.selectCount(new QueryWrapper<ActivitySignup>()
@@ -152,6 +152,7 @@ public class ActivitySignupCancelService {
             throw new OperateException("未找到报名记录");
         }
 
+        long now = TimeUtils.timestamp();
         Map<Integer, RechargeOrder> orders = loadOrders(active);
         List<ActivitySignup> freeRows = new ArrayList<>();
         Set<Integer> refundOrderIds = new LinkedHashSet<>();
@@ -166,12 +167,28 @@ public class ActivitySignupCancelService {
                     || !userId.equals(order.getUserId()) || !activityId.equals(order.getActivityId())) {
                 throw new OperateException("报名订单不存在，请联系客服");
             }
+            if (isRefundablePaid(order)) {
+                refundOrderIds.add(orderId);
+                continue;
+            }
+            if (order.getPayStatus() != null && order.getPayStatus() == PaymentEnum.UN_PAID.getCode()) {
+                // 未支付取消：先条件关单（pay_status 0→4）抢到才释放名额；
+                // 抢不到说明回调已并发支付，重读订单改走退款申请，避免已付款报名被直接取消。
+                if (closeUnpaidOrder(orderId, now)) {
+                    freeRows.add(signup);
+                } else {
+                    RechargeOrder fresh = rechargeOrderMapper.selectById(orderId);
+                    if (isRefundablePaid(fresh)) {
+                        refundOrderIds.add(orderId);
+                    } else {
+                        freeRows.add(signup);
+                    }
+                }
+                continue;
+            }
             int refundStatus = order.getRefundStatus() == null ? 0 : order.getRefundStatus();
             BigDecimal amount = order.getOrderAmount() == null ? BigDecimal.ZERO : order.getOrderAmount();
-            boolean paid = order.getPayStatus() != null && order.getPayStatus() == PaymentEnum.OK_PAID.getCode();
-            if (paid && refundStatus == 0 && amount.compareTo(BigDecimal.ZERO) > 0) {
-                refundOrderIds.add(orderId);
-            } else if (refundStatus != 0
+            if (refundStatus != 0
                     || (order.getPayStatus() != null && order.getPayStatus() == PaymentEnum.CLOSED.getCode())
                     || amount.compareTo(BigDecimal.ZERO) <= 0) {
                 // 已退款/已关闭/零元订单：没有待退资金，直接取消并释放名额（数据修复口径）。
@@ -215,8 +232,9 @@ public class ActivitySignupCancelService {
             return result(signup.getActivityId(), MODE_CANCELLED, null, Collections.<Integer>emptyList(),
                     0, 0, true);
         }
-        if (signup.getStatus() == null || signup.getStatus() != STATUS_PAID) {
-            throw new OperateException("只有已报名状态可以取消");
+        if (signup.getStatus() == null
+                || (signup.getStatus() != STATUS_PAID && signup.getStatus() != ActivitySignup.STATUS_PENDING)) {
+            throw new OperateException("只有待支付或已报名状态可以取消");
         }
 
         List<ActivitySignup> group = signupGroup(signup);
@@ -237,10 +255,26 @@ public class ActivitySignupCancelService {
                     || !signup.getActivityId().equals(order.getActivityId())) {
                 throw new OperateException("报名订单不存在，请联系客服");
             }
+            boolean refundable = isRefundablePaid(order);
+            if (!refundable && order.getPayStatus() != null
+                    && order.getPayStatus() == PaymentEnum.UN_PAID.getCode()) {
+                // 后台取消未支付报名：关单成功才释放；并发回调已支付则重读订单改走退款申请。
+                if (closeUnpaidOrder(orderId, TimeUtils.timestamp())) {
+                    CancelStats stats = cancelSignups(group);
+                    log.info("后台活动报名取消: signupId={} activityId={} mode={} cancelledSignups={} released={} refundId=0",
+                            signupId, signup.getActivityId(), MODE_CANCELLED, stats.signupCount, stats.released);
+                    return result(signup.getActivityId(), MODE_CANCELLED, null,
+                            Collections.<Integer>emptyList(), stats.signupCount, stats.released, false);
+                }
+                order = rechargeOrderMapper.selectById(orderId);
+                if (order == null || order.getDeleteTime() != null) {
+                    throw new OperateException("报名订单不存在，请联系客服");
+                }
+                refundable = isRefundablePaid(order);
+            }
             int refundStatus = order.getRefundStatus() == null ? 0 : order.getRefundStatus();
             BigDecimal amount = order.getOrderAmount() == null ? BigDecimal.ZERO : order.getOrderAmount();
-            boolean paid = order.getPayStatus() != null && order.getPayStatus() == PaymentEnum.OK_PAID.getCode();
-            if (paid && refundStatus == 0 && amount.compareTo(BigDecimal.ZERO) > 0) {
+            if (refundable) {
                 CourseRefund refund = createRefund(order, "后台取消活动报名", trim(remark, DETAIL_MAX));
                 refundId = refund.getId();
                 cancelledSignups = 0;
@@ -409,6 +443,28 @@ public class ActivitySignupCancelService {
             map.put(order.getId(), order);
         }
         return map;
+    }
+
+    /** 已支付且仍有待退资金：才允许走退款申请，避免零元/已退款/已关闭订单重复退款。 */
+    private boolean isRefundablePaid(RechargeOrder order) {
+        if (order == null || order.getDeleteTime() != null
+                || order.getPayStatus() == null
+                || order.getPayStatus() != PaymentEnum.OK_PAID.getCode()) {
+            return false;
+        }
+        int refundStatus = order.getRefundStatus() == null ? 0 : order.getRefundStatus();
+        BigDecimal amount = order.getOrderAmount() == null ? BigDecimal.ZERO : order.getOrderAmount();
+        return refundStatus == 0 && amount.compareTo(BigDecimal.ZERO) > 0;
+    }
+
+    /** 未支付订单条件关单（pay_status 0→4），只有抢到状态变更的调用才继续释放名额。 */
+    private boolean closeUnpaidOrder(Integer orderId, long now) {
+        return rechargeOrderMapper.update(null, new UpdateWrapper<RechargeOrder>()
+                .set("pay_status", PaymentEnum.CLOSED.getCode())
+                .set("update_time", now)
+                .eq("id", orderId)
+                .eq("pay_status", PaymentEnum.UN_PAID.getCode())
+                .isNull("delete_time")) > 0;
     }
 
     private CourseRefund createRefund(RechargeOrder order, String reason, String detail) {
