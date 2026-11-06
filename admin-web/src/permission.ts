@@ -61,7 +61,7 @@ const whiteList: string[] = [PageEnum.LOGIN, PageEnum.ERROR_403]
 router.beforeEach(async (to, from, next) => {
     // 开始 Progress Bar
     NProgress.start()
-    document.title = config.title // 品牌标题固定为「洛小童管理后台」（#100 AC3）
+    document.title = config.title // 品牌标题固定为「体育培训管理后台」（#100 AC3）
     const userStore = useUserStore()
     const tabsStore = useTabsStore()
     if (whiteList.includes(to.path)) {
