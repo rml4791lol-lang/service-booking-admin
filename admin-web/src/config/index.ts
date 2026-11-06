@@ -1,6 +1,6 @@
 const config = {
     terminal: 1, //终端
-    title: '体育培训管理后台', //网站默认标题
+    title: '预约服务管理后台', //网站默认标题
     version: '1.9.1', //版本号
     baseUrl: `${import.meta.env.VITE_APP_BASE_URL || ''}/`, //请求接口域名
     urlPrefix: 'adminapi', //请求默认前缀
