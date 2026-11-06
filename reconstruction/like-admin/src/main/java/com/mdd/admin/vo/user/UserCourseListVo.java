@@ -5,9 +5,9 @@ import java.io.Serializable;
 /**
  * 老课包（la_user_course）列表行。
  *
- * <p>total/used/remain 为账面值（调整接口直接写这三列，转化券以剩余课时为准）；
- * systemUsed/systemRemain 为按消课流水重算的「学员详情口径」，供核对差异，
- * 不参与调整入参。</p>
+ * <p>#222 起课时以消课流水为唯一事实：used/remain 为流水派生值（含调整流水增量），
+ * fieldUsed/fieldRemain 为 la_user_course 账面字段，两者不一致时 fieldMismatch=true
+ * 由前端标注；systemUsed/systemRemain 保留同一派生口径（兼容旧前端）。</p>
  */
 public class UserCourseListVo implements Serializable {
     private static final long serialVersionUID = 1L;
@@ -22,6 +22,9 @@ public class UserCourseListVo implements Serializable {
     private Integer totalLessons;
     private Integer usedLessons;
     private Integer remainLessons;
+    private Integer fieldUsedLessons;
+    private Integer fieldRemainLessons;
+    private Boolean fieldMismatch;
     private Integer systemUsedLessons;
     private Integer systemRemainLessons;
     private Integer status;
@@ -107,6 +110,30 @@ public class UserCourseListVo implements Serializable {
 
     public void setRemainLessons(Integer remainLessons) {
         this.remainLessons = remainLessons;
+    }
+
+    public Integer getFieldUsedLessons() {
+        return fieldUsedLessons;
+    }
+
+    public void setFieldUsedLessons(Integer fieldUsedLessons) {
+        this.fieldUsedLessons = fieldUsedLessons;
+    }
+
+    public Integer getFieldRemainLessons() {
+        return fieldRemainLessons;
+    }
+
+    public void setFieldRemainLessons(Integer fieldRemainLessons) {
+        this.fieldRemainLessons = fieldRemainLessons;
+    }
+
+    public Boolean getFieldMismatch() {
+        return fieldMismatch;
+    }
+
+    public void setFieldMismatch(Boolean fieldMismatch) {
+        this.fieldMismatch = fieldMismatch;
     }
 
     public Integer getSystemUsedLessons() {

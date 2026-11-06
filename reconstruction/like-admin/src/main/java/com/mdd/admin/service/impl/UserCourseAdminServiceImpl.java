@@ -1,7 +1,9 @@
 package com.mdd.admin.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.mdd.admin.LikeAdminThreadLocal;
 import com.mdd.admin.mapper.UserCourseQueryMapper;
 import com.mdd.admin.service.IUserCourseAdminService;
 import com.mdd.admin.service.IUserCourseAccountService;
@@ -12,13 +14,17 @@ import com.mdd.admin.vo.user.UserCourseListVo;
 import com.mdd.common.core.PageResult;
 import com.mdd.common.entity.course.CourseClass;
 import com.mdd.common.entity.course.UserCourse;
+import com.mdd.common.entity.course.UserCourseAdjustLog;
 import com.mdd.common.entity.student.Student;
 import com.mdd.common.entity.user.User;
 import com.mdd.common.exception.OperateException;
 import com.mdd.common.mapper.course.CourseClassMapper;
+import com.mdd.common.mapper.course.UserCourseAdjustLogMapper;
 import com.mdd.common.mapper.course.UserCourseMapper;
 import com.mdd.common.mapper.student.StudentMapper;
 import com.mdd.common.mapper.user.UserMapper;
+import com.mdd.common.service.CourseConsumeEffectiveService;
+import com.mdd.common.util.CourseDerivedBalance;
 import com.mdd.common.util.TimeUtils;
 import java.util.Collections;
 import java.util.LinkedList;
@@ -49,6 +55,10 @@ public class UserCourseAdminServiceImpl implements IUserCourseAdminService {
     CourseClassMapper courseClassMapper;
     @Resource
     IUserCourseAccountService userCourseAccountService;
+    @Resource
+    CourseConsumeEffectiveService courseConsumeEffectiveService;
+    @Resource
+    UserCourseAdjustLogMapper userCourseAdjustLogMapper;
 
     @Override
     public PageResult<UserCourseListVo> list(PageValidate pageValidate, UserCourseSearchValidate searchValidate) {
@@ -63,15 +73,20 @@ public class UserCourseAdminServiceImpl implements IUserCourseAdminService {
         Map<Integer, User> userMap = loadUsers(rows);
         Map<Integer, Student> studentMap = loadStudents(rows);
         Map<Integer, CourseClass> classMap = loadClasses(rows);
-        Map<Integer, Integer> systemUsedMap = loadSystemUsed(rows);
+        Map<Integer, CourseDerivedBalance> derivedMap = loadDerivedBalances(rows);
 
         LinkedList<UserCourseListVo> list = new LinkedList<>();
         for (UserCourse uc : rows) {
-            list.add(toVo(uc, userMap, studentMap, classMap, systemUsedMap));
+            list.add(toVo(uc, userMap, studentMap, classMap, derivedMap));
         }
         return PageResult.iPageHandle(iPage.getTotal(), iPage.getCurrent(), iPage.getSize(), list);
     }
 
+    /**
+     * 调整课时（#222 流水口径）：以「流水派生已用」为锚点写调整流水
+     * （la_user_course_adjust_log，含调整前后值与原因），再同步 la_user_course 三列
+     * （字段保留为展示缓存，派生值优先）。派生重放 fifo + Σchange_used = 写入 used。
+     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void adjust(UserCourseAdjustValidate adjustValidate) {
@@ -79,20 +94,47 @@ public class UserCourseAdminServiceImpl implements IUserCourseAdminService {
         if (uc == null) {
             throw new OperateException("课包不存在或已删除");
         }
-        UserCourseLessonAdjustment.Result result;
+        int oldTotal = nonNegative(uc.getTotalLessons());
+        int oldRemain = nonNegative(uc.getRemainLessons());
+        int fifoUsed = courseConsumeEffectiveService.countEffectiveUsedLessonsForEnrollment(uc);
+        int priorDelta = courseConsumeEffectiveService.sumAdjustUsedDelta(uc.getId());
+        UserCourseAdjustDerivedPlan.Plan plan;
         try {
-            result = UserCourseLessonAdjustment.resolve(
-                    nonNegative(uc.getTotalLessons()),
-                    nonNegative(uc.getRemainLessons()),
-                    adjustValidate.getTotalLessons(),
-                    adjustValidate.getRemainLessons());
+            plan = UserCourseAdjustDerivedPlan.resolve(oldTotal, oldRemain, fifoUsed, priorDelta,
+                    adjustValidate.getTotalLessons(), adjustValidate.getRemainLessons());
         } catch (IllegalArgumentException e) {
             throw new OperateException(e.getMessage());
         }
-        uc.setTotalLessons(result.getTotalLessons());
-        uc.setUsedLessons(result.getUsedLessons());
-        uc.setRemainLessons(result.getRemainLessons());
-        uc.setUpdateTime(TimeUtils.timestamp());
+        long now = TimeUtils.timestamp();
+
+        int rawDerivedUsed = fifoUsed + priorDelta;
+        // 快照用于审计展示：clamp 到合法区间；Δused 保持未 clamp 锚点，保证派生重放精确
+        int beforeUsed = Math.max(0, Math.min(rawDerivedUsed, oldTotal));
+        int beforeRemain = Math.max(oldTotal - beforeUsed, 0);
+
+        UserCourseAdjustLog adjustLog = new UserCourseAdjustLog();
+        adjustLog.setUserId(uc.getUserId());
+        adjustLog.setStudentId(uc.getStudentId());
+        adjustLog.setUserCourseId(uc.getId());
+        adjustLog.setCourseClassId(uc.getCourseClassId());
+        adjustLog.setBeforeTotal(oldTotal);
+        adjustLog.setBeforeUsed(beforeUsed);
+        adjustLog.setBeforeRemain(beforeRemain);
+        adjustLog.setAfterTotal(plan.getTotalLessons());
+        adjustLog.setAfterUsed(plan.getUsedLessons());
+        adjustLog.setAfterRemain(plan.getRemainLessons());
+        adjustLog.setChangeTotal(plan.getTotalLessons() - oldTotal);
+        adjustLog.setChangeUsed(plan.getChangeUsed());
+        adjustLog.setChangeRemain(plan.getRemainLessons() - beforeRemain);
+        adjustLog.setRemark(adjustValidate.getRemark());
+        adjustLog.setAdminId(LikeAdminThreadLocal.getAdminId());
+        adjustLog.setCreateTime(Long.valueOf(now));
+        userCourseAdjustLogMapper.insert(adjustLog);
+
+        uc.setTotalLessons(plan.getTotalLessons());
+        uc.setUsedLessons(plan.getUsedLessons());
+        uc.setRemainLessons(plan.getRemainLessons());
+        uc.setUpdateTime(Long.valueOf(now));
         userCourseMapper.updateById(uc);
     }
 
@@ -128,26 +170,37 @@ public class UserCourseAdminServiceImpl implements IUserCourseAdminService {
     }
 
     /**
-     * 「学员详情」口径的已上/剩余课时：按消课流水 + 退款状态 + FIFO 归属重算，
+     * 「流水派生」余额（#222）：消课流水 FIFO + 调整流水增量，used/remain 展示值以此为准。
      * 与 {@code UserController#account} 同源；失败时降级为空表，不影响账面列表展示。
      */
-    private Map<Integer, Integer> loadSystemUsed(List<UserCourse> rows) {
+    private Map<Integer, CourseDerivedBalance> loadDerivedBalances(List<UserCourse> rows) {
         try {
             List<Integer> userIds = rows.stream().map(UserCourse::getUserId)
                     .filter(id -> id != null && id > 0).distinct().collect(Collectors.toList());
-            return userCourseAccountService.countEffectiveUsedLessonsByUserIds(userIds);
+            if (userIds.isEmpty()) {
+                return Collections.emptyMap();
+            }
+            // FIFO 分配需要同一用户下的全部课包，不能只看当前分页行
+            List<UserCourse> enrollments = userCourseMapper.selectList(
+                    new QueryWrapper<UserCourse>()
+                            .in("user_id", userIds.toArray()).isNull("delete_time"));
+            return courseConsumeEffectiveService.deriveBalanceForUserRows(enrollments);
         } catch (RuntimeException e) {
-            log.warn("老课包列表计算系统已上课时失败，已降级为空", e);
+            log.warn("老课包列表计算流水派生课时失败，已降级为空", e);
             return Collections.emptyMap();
         }
     }
 
     private UserCourseListVo toVo(UserCourse uc, Map<Integer, User> userMap,
                                   Map<Integer, Student> studentMap, Map<Integer, CourseClass> classMap,
-                                  Map<Integer, Integer> systemUsedMap) {
+                                  Map<Integer, CourseDerivedBalance> derivedMap) {
         int total = nonNegative(uc.getTotalLessons());
-        int remain = Math.min(nonNegative(uc.getRemainLessons()), total);
-        int systemUsed = Math.min(nonNegative(systemUsedMap.get(uc.getId())), total);
+        int fieldRemain = Math.min(nonNegative(uc.getRemainLessons()), total);
+        int fieldUsed = total - fieldRemain;
+        CourseDerivedBalance derived = derivedMap.get(uc.getId());
+        int derivedUsed = derived != null ? derived.getUsedLessons() : fieldUsed;
+        int derivedRemain = derived != null ? derived.getRemainLessons() : fieldRemain;
+        boolean refunded = uc.getStatus() != null && uc.getStatus() == 2;
 
         User user = userMap.get(uc.getUserId());
         Student student = studentMap.get(uc.getStudentId());
@@ -162,10 +215,14 @@ public class UserCourseAdminServiceImpl implements IUserCourseAdminService {
         vo.setCourseClassId(uc.getCourseClassId());
         vo.setClassName(courseClass != null && courseClass.getName() != null ? courseClass.getName() : "");
         vo.setTotalLessons(total);
-        vo.setUsedLessons(total - remain);
-        vo.setRemainLessons(remain);
-        vo.setSystemUsedLessons(systemUsed);
-        vo.setSystemRemainLessons(Math.max(total - systemUsed, 0));
+        // 展示值 = 流水派生（已退课的结转账面保持不变）
+        vo.setUsedLessons(refunded ? fieldUsed : derivedUsed);
+        vo.setRemainLessons(refunded ? fieldRemain : derivedRemain);
+        vo.setFieldUsedLessons(fieldUsed);
+        vo.setFieldRemainLessons(fieldRemain);
+        vo.setFieldMismatch(!refunded && (derivedUsed != fieldUsed || derivedRemain != fieldRemain));
+        vo.setSystemUsedLessons(refunded ? fieldUsed : derivedUsed);
+        vo.setSystemRemainLessons(refunded ? fieldRemain : derivedRemain);
         vo.setStatus(uc.getStatus());
         vo.setStatusText(statusText(uc.getStatus()));
         vo.setCreateTime(TimeUtils.timestampToDate(uc.getCreateTime()));

@@ -10,9 +10,7 @@ import com.mdd.common.mapper.course.CourseClassMapper;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -21,14 +19,9 @@ import java.util.Map;
  * <p>教练端核销（#26）与后台人工补核销共用同一套「逐人自动匹配一张可用次数券、
  * 扣 1 次、追加只增流水」的口径，避免两条链路各写一份导致次数/考勤不一致。</p>
  *
- * <p>规则与小程序 mock / 金样保持一致：</p>
- * <ul>
- *   <li>券状态有效、剩余次数 &gt; 0、在有效期内；</li>
- *   <li>scopeType=private 只认私教课；group 只认团课；trial 不认私教课；</li>
- *   <li>courseIds / areaIds 非空时做白名单匹配；</li>
- *   <li>传了 studentId 时必须与持券学员一致（未绑定学员的券也参与匹配）；</li>
- *   <li>多张可用券按「到期最早优先，同到期按 id 升序」。</li>
- * </ul>
+ * <p>券可用性判定自 #221 起收敛到 {@link CouponEligibility}（唯一实现）：
+ * 候选查询、单券判定、不可用原因全部走该模块，本服务只保留核销动作
+ * （FOR UPDATE 加锁复核、扣次数、写流水）。</p>
  *
  * <p>扣减前 {@code SELECT ... FOR UPDATE} 重新加锁并复核，必须由外层事务调用；
  * 异常随外层事务整体回滚。无可用券返回 {@code deducted=false} 与中文原因，
@@ -37,7 +30,8 @@ import java.util.Map;
 @Service
 public class CouponCheckinService {
 
-    private static final int STATUS_VALID = 1;
+    private static final int STATUS_VALID = CouponEligibility.STATUS_VALID;
+    /** 券实例状态：2=已用完（核销扣至 0 后落库值）。 */
     private static final int STATUS_USED = 2;
     private static final int FLOW_CONSUME = 2;
 
@@ -47,6 +41,8 @@ public class CouponCheckinService {
     CouponFlowMapper couponFlowMapper;
     @Resource
     CourseClassMapper courseClassMapper;
+    @Resource
+    CouponEligibility couponEligibility;
 
     /**
      * 核销扣券：按学员自动匹配一张可用券，扣 1 次并追加核销流水。
@@ -77,25 +73,18 @@ public class CouponCheckinService {
         }
 
         long now = now();
-        // 持券学员本人或未绑定学员的券都参与自动匹配（与 mock「未绑定或绑定该学员」一致）。
-        List<CouponInstance> instances = couponInstanceMapper.selectList(new QueryWrapper<CouponInstance>()
-                .eq("user_id", userId)
-                .and(wrapper -> wrapper.eq("student_id", studentId)
-                        .or().isNull("student_id")
-                        .or().eq("student_id", 0))
-                .orderByAsc("expire_time")
-                .orderByAsc("id"));
-        String firstReason = null;
-        boolean hadCandidate = false;
-        for (CouponInstance candidate : instances) {
-            hadCandidate = true;
+        // 可用性判定统一走 CouponEligibility（#221）：学员本人 + 账号级券参与匹配，
+        // 到期最早优先；不可用原因（未生效/过期/用完/范围不符/学员不符）由其给出。
+        CouponEligibility.Evaluation evaluation = couponEligibility.evaluate(userId, studentId, course, now);
+        String firstReason = evaluation.firstReason();
+        for (CouponInstance candidate : evaluation.getEligible()) {
             CouponInstance locked = couponInstanceMapper.selectOne(new QueryWrapper<CouponInstance>()
                     .eq("id", candidate.getId())
                     .last("limit 1 for update"));
             if (locked == null) {
                 continue;
             }
-            String reason = checkApplies(locked, course, studentId, now);
+            String reason = couponEligibility.checkApplies(locked, course, studentId, now);
             if (reason != null) {
                 if (firstReason == null) {
                     firstReason = reason;
@@ -133,7 +122,7 @@ public class CouponCheckinService {
             return result;
         }
         result.put("reason", firstReason != null ? firstReason
-                : (hadCandidate ? "券次数已用完" : "无可用次数券"));
+                : (evaluation.hasCandidates() ? CouponEligibility.REASON_EXHAUSTED : "无可用次数券"));
         return result;
     }
 
@@ -159,120 +148,36 @@ public class CouponCheckinService {
             return result;
         }
         long now = now();
-        List<CouponInstance> instances = couponInstanceMapper.selectList(new QueryWrapper<CouponInstance>()
-                .eq("user_id", userId)
-                .and(wrapper -> wrapper.eq("student_id", studentId)
-                        .or().isNull("student_id")
-                        .or().eq("student_id", 0))
-                .orderByAsc("expire_time")
-                .orderByAsc("id"));
-        String firstReason = null;
-        boolean hadCandidate = false;
-        for (CouponInstance instance : instances) {
-            hadCandidate = true;
-            String reason = checkApplies(instance, course, studentId, now);
-            if (reason == null) {
-                result.put("available", true);
-                result.put("couponId", String.valueOf(instance.getId()));
-                result.put("title", instance.getTitle() == null ? "" : instance.getTitle());
-                result.put("remaining", instance.getRemaining() == null ? 0 : instance.getRemaining());
-                result.put("reason", "");
-                return result;
-            }
-            if (firstReason == null) {
-                firstReason = reason;
-            }
+        CouponEligibility.Evaluation evaluation = couponEligibility.evaluate(userId, studentId, course, now);
+        if (!evaluation.getEligible().isEmpty()) {
+            CouponInstance instance = evaluation.getEligible().get(0);
+            result.put("available", true);
+            result.put("couponId", String.valueOf(instance.getId()));
+            result.put("title", instance.getTitle() == null ? "" : instance.getTitle());
+            result.put("remaining", instance.getRemaining() == null ? 0 : instance.getRemaining());
+            result.put("reason", "");
+            return result;
         }
-        result.put("reason", firstReason != null ? firstReason
-                : (hadCandidate ? "券次数已用完" : "无可用次数券"));
+        result.put("reason", evaluation.firstReason() != null ? evaluation.firstReason()
+                : (evaluation.hasCandidates() ? CouponEligibility.REASON_EXHAUSTED : "无可用次数券"));
         return result;
     }
 
     /**
      * 券适用规则。返回 null 表示适用，否则返回不可用原因。
+     *
+     * <p>#221 起实现收敛到 {@link CouponEligibility#checkApplies}，保留本方法
+     * 维持既有调用方（券详情 bestCoupon / applies 等）的签名不变。</p>
      */
     public String checkApplies(CouponInstance instance, CourseClass course, Integer studentId, long now) {
-        if (instance == null || course == null) {
-            return "券或课程不存在";
-        }
-        if (instance.getStatus() == null || instance.getStatus() != STATUS_VALID) {
-            return "券状态不可用";
-        }
-        if (instance.getRemaining() == null || instance.getRemaining() <= 0) {
-            return "券次数已用完";
-        }
-        if (instance.getStartTime() != null && instance.getStartTime() > now) {
-            return "券尚未生效";
-        }
-        if (instance.getExpireTime() != null && instance.getExpireTime() < now) {
-            return "券已过期";
-        }
-        if (instance.getStudentId() != null && instance.getStudentId() > 0
-                && studentId != null && studentId > 0
-                && !instance.getStudentId().equals(studentId)) {
-            return "券不属于该学员";
-        }
-
-        String courseType = courseType(course);
-        String scopeType = instance.getScopeType() == null ? "all" : instance.getScopeType();
-        if ("private".equals(scopeType) && !"private".equals(courseType)) {
-            return "该券仅限私教课使用";
-        }
-        if ("group".equals(scopeType) && !"group".equals(courseType)) {
-            return "该券仅限团课使用";
-        }
-        if ("trial".equals(scopeType) && "private".equals(courseType)) {
-            return "体验券不能用于私教课";
-        }
-
-        List<Integer> courseIds = parseIds(instance.getCourseIds());
-        if (!courseIds.isEmpty() && !courseIds.contains(course.getId())) {
-            return "该券不适用于本课程";
-        }
-        List<Integer> areaIds = parseIds(instance.getAreaIds());
-        if (!areaIds.isEmpty() && (course.getAreaId() == null || !areaIds.contains(course.getAreaId()))) {
-            return "该券不适用于本小区";
-        }
-        return null;
+        return couponEligibility.checkApplies(instance, course, studentId, now);
     }
 
     /**
-     * 课程类型：私教 / 体验 / 团课。
-     *
-     * <p>现有 la_course_class 没有标准的班型字段：一对一/一对二/一对三/私教按名称识别，
-     * class_type=1 为体验班，其余团课。券的适用判断只依赖这里，未来补字段时改一处即可。</p>
+     * 课程类型：私教 / 体验 / 团课（#221 起实现收敛到 {@link CouponEligibility#courseType}）。
      */
     public String courseType(CourseClass course) {
-        String name = course == null || course.getName() == null ? "" : course.getName();
-        if (name.contains("一对一") || name.contains("一对二") || name.contains("一对三")
-                || name.contains("私教")) {
-            return "private";
-        }
-        if (course.getClassType() != null && course.getClassType() == 1) {
-            return "trial";
-        }
-        return "group";
-    }
-
-    private List<Integer> parseIds(String text) {
-        List<Integer> ids = new ArrayList<>();
-        if (text == null || text.trim().isEmpty()) {
-            return ids;
-        }
-        for (String part : text.split(",")) {
-            if (part == null || part.trim().isEmpty()) {
-                continue;
-            }
-            try {
-                int value = Integer.parseInt(part.trim());
-                if (value > 0) {
-                    ids.add(value);
-                }
-            } catch (NumberFormatException ignored) {
-                // 后台脏数据跳过，不影响其他 ID
-            }
-        }
-        return ids;
+        return couponEligibility.courseType(course);
     }
 
     private long now() {

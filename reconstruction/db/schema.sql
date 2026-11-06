@@ -2047,6 +2047,31 @@ CREATE TABLE `la_user_course` (
   KEY `idx_course_class_id` (`course_class_id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=235 DEFAULT CHARSET=utf8mb4 COMMENT='用户课程报名记录';
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `la_user_course_adjust_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `la_user_course_adjust_log` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL DEFAULT '0' COMMENT '用户ID',
+  `student_id` int(10) unsigned NOT NULL DEFAULT '0' COMMENT '学员ID',
+  `user_course_id` int(11) NOT NULL DEFAULT '0' COMMENT '报名记录ID',
+  `course_class_id` int(11) NOT NULL DEFAULT '0' COMMENT '班级ID',
+  `before_total` int(11) NOT NULL DEFAULT '0' COMMENT '调整前总课时',
+  `before_used` int(11) NOT NULL DEFAULT '0' COMMENT '调整前已用（流水口径）',
+  `before_remain` int(11) NOT NULL DEFAULT '0' COMMENT '调整前剩余',
+  `after_total` int(11) NOT NULL DEFAULT '0' COMMENT '调整后总课时',
+  `after_used` int(11) NOT NULL DEFAULT '0' COMMENT '调整后已用（流水口径）',
+  `after_remain` int(11) NOT NULL DEFAULT '0' COMMENT '调整后剩余',
+  `change_total` int(11) NOT NULL DEFAULT '0' COMMENT '总课时增量',
+  `change_used` int(11) NOT NULL DEFAULT '0' COMMENT '已用增量（并入流水派生）',
+  `change_remain` int(11) NOT NULL DEFAULT '0' COMMENT '剩余增量',
+  `remark` varchar(500) NOT NULL DEFAULT '' COMMENT '调整原因',
+  `admin_id` int(11) NOT NULL DEFAULT '0' COMMENT '操作管理员ID',
+  `create_time` int(10) unsigned DEFAULT NULL COMMENT '调整时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_user_course` (`user_course_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='课时调整流水表';
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_user_session`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8 */;

@@ -65,10 +65,10 @@ import com.mdd.common.service.CourseConsumeEffectiveService;
 import com.mdd.common.mapper.student.StudentMapper;
 import com.mdd.common.mapper.user.UserMapper;
 import com.mdd.common.util.CourseConsumeLogUtil;
+import com.mdd.common.util.CourseDerivedBalance;
 import com.mdd.common.util.StringUtils;
 import com.mdd.common.util.TimeUtils;
 import com.mdd.common.util.UrlUtils;
-import com.mdd.common.util.UserCourseBalanceUtil;
 import com.mdd.common.util.UserCourseEligibilityUtil;
 import java.io.Serializable;
 import java.text.SimpleDateFormat;
@@ -116,7 +116,8 @@ implements IUserCourseAccountService {
         List<UserCourse> enrollments = this.userCourseMapper.selectList(new QueryWrapper<UserCourse>().eq("user_id", (Object)userId).isNull("delete_time").orderByDesc("id"));
         this.applyEffectiveRefundStatuses(enrollments);
         Map<Integer, CourseClass> classMap = this.loadClassMap(enrollments);
-        Map<Integer, Integer> usedByUserCourseId = this.allocateUsedLessonsForUser(userId, enrollments);
+        // #222：展示值以消课流水派生（含调整流水增量），不再走 UserCourseBalanceUtil 的库里回填兜底
+        Map<Integer, CourseDerivedBalance> derivedMap = this.courseConsumeEffectiveService.deriveBalanceForUser(userId, enrollments);
         int sumTotal = 0;
         int sumUsed = 0;
         int sumRemain = 0;
@@ -125,8 +126,10 @@ implements IUserCourseAccountService {
             Student student;
             CourseClass cls = (CourseClass)classMap.get(uc.getCourseClassId());
             if (cls == null || cls.getIsDelete() != null && cls.getIsDelete() == 1) continue;
-            int effectiveUsed = usedByUserCourseId.getOrDefault(uc.getId(), 0);
-            UserCourseBalanceUtil.Snapshot balance = UserCourseBalanceUtil.resolve((Integer)uc.getTotalLessons(), (Integer)uc.getUsedLessons(), (Integer)uc.getRemainLessons(), (Integer)effectiveUsed, (Integer)uc.getStatus());
+            CourseDerivedBalance balance = derivedMap.get(uc.getId());
+            if (balance == null) {
+                balance = CourseDerivedBalance.derive(uc.getTotalLessons(), 0, 0, uc.getStatus());
+            }
             int total = balance.getTotalLessons();
             int used = balance.getUsedLessons();
             int remain = balance.getRemainLessons();
@@ -135,6 +138,10 @@ implements IUserCourseAccountService {
                 sumUsed += used;
                 sumRemain += remain;
             }
+            // 派生值与账面字段不一致要标注（老链路未扣剩余/直接改库的历史漂移）
+            int fieldUsed = nonNegativeLessons(uc.getUsedLessons());
+            int fieldRemain = Math.min(nonNegativeLessons(uc.getRemainLessons()), total);
+            boolean fieldMismatch = balance.getStatus() != 2 && (used != fieldUsed || remain != fieldRemain);
             LinkedHashMap<String, Object> courseItem = new LinkedHashMap<String, Object>();
             courseItem.put("userCourseId", uc.getId());
             courseItem.put("courseClassId", uc.getCourseClassId());
@@ -143,6 +150,9 @@ implements IUserCourseAccountService {
             courseItem.put("totalLessons", total);
             courseItem.put("usedLessons", used);
             courseItem.put("remainLessons", remain);
+            courseItem.put("fieldUsedLessons", fieldUsed);
+            courseItem.put("fieldRemainLessons", fieldRemain);
+            courseItem.put("fieldMismatch", fieldMismatch);
             courseItem.put("status", balance.getStatus());
             courseItem.put("statusText", this.resolveUserCourseStatusText(Integer.valueOf(balance.getStatus())));
             courseItem.put("enrollTime", uc.getCreateTime() != null ? TimeUtils.timestampToDate((Long)uc.getCreateTime()) : "");
@@ -171,6 +181,10 @@ implements IUserCourseAccountService {
     private Map<Integer, Integer> allocateUsedLessonsForUser(Integer userId, List<UserCourse> enrollments) {
         // 口径唯一实现收敛到 like-common：退课/退款重算与本列表共用同一套 FIFO 分配。
         return this.courseConsumeEffectiveService.allocateUsedLessonsForUser(userId, enrollments);
+    }
+
+    private static int nonNegativeLessons(Integer value) {
+        return value != null && value > 0 ? value : 0;
     }
 
     private void applyEffectiveRefundStatuses(List<UserCourse> enrollments) {

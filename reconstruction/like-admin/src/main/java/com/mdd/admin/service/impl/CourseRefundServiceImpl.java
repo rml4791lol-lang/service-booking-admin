@@ -41,8 +41,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.mdd.admin.service.ICourseRefundService;
-import com.mdd.admin.service.IFinanceRechargerService;
-import com.mdd.admin.service.IRefundTaskService;
+import com.mdd.admin.service.refund.RefundSettlement;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.admin.validate.refund.CourseRefundAuditValidate;
 import com.mdd.admin.validate.refund.CourseRefundSearchValidate;
@@ -108,9 +107,7 @@ implements ICourseRefundService {
     @Resource
     RefundTaskMapper refundTaskMapper;
     @Resource
-    IRefundTaskService refundTaskService;
-    @Resource
-    IFinanceRechargerService financeRechargerService;
+    RefundSettlement refundSettlement;
     @Resource
     CouponInstanceMapper couponInstanceMapper;
     @Resource
@@ -223,38 +220,15 @@ implements ICourseRefundService {
                 return;
             }
 
-            // outbox（#60）：只有真正需要调用微信退款的订单才落任务；钱包订单同步退回余额，
-            // 不可退/已退/零元订单不建任务，后台列表不会再把「无需线上退款」显示成「退款成功」。
+            // 出款统一走 RefundSettlement（#220）：微信 outbox（#60）/ 钱包同步 / 其它渠道
+            // 的分派与幂等放行都在该模块；调用方只构造退款意图。
+            // 金额>0 才核订单可退性：不可退/已退/零元订单不出款不建任务，
+            // 后台列表不会再把「无需线上退款」显示成「退款成功」。
             if (refund.getRefundAmount() != null && refund.getRefundAmount().compareTo(BigDecimal.ZERO) > 0) {
                 RechargeOrder refundableOrder = (RechargeOrder)this.rechargeOrderMapper.selectOne(new QueryWrapper<RechargeOrder>().eq("id", (Object)exactOrder.getId()).eq("pay_status", (Object)1).eq("refund_status", (Object)0).isNull("delete_time").last("limit 1"));
                 if (refundableOrder != null) {
-                    boolean wechatPaid = refundableOrder.getPayWay() != null && refundableOrder.getPayWay() == 2
-                            && refundableOrder.getTransactionId() != null && !refundableOrder.getTransactionId().isEmpty();
-                    boolean walletPaid = refundableOrder.getPayWay() != null && refundableOrder.getPayWay() == 1;
-                    if (wechatPaid) {
-                        // 微信退款必须异步 outbox：审核事务内不直连微信，失败可重试。
-                        // #152：同单唯一放行——先锁 order 行并校验同单无未完结退款任务再落任务；
-                        // 并发审核在同一行锁上串行，后到者看到同单已有任务直接拒绝，杜绝双重退款。
-                        this.claimOrderForWechatRefund(refundableOrder);
-                        this.refundTaskService.createForRefund(refund, refundableOrder);
-                    } else if (walletPaid) {
-                        // #61 钱包支付课程退款：余额加回（部分退款按实际应退金额），
-                        // 同步写退款记录/流水；不走退款任务，避免后台出现虚假的「退款成功」任务。
-                        // 注意：FinanceRechargerService 用 REQUIRES_NEW 独立提交，内部也会更新
-                        // la_user_course；因此本方法把 user_course 的最终更新放到退款之后，
-                        // 避免外层先锁住该行、内层新事务等待造成死锁。
-                        this.financeRechargerService.refund(refundableOrder.getId(), adminId,
-                                refund.getRefundAmount());
-                    } else {
-                        // 非微信/钱包（如线下转账）：保持原行为，审核即视为退款完成，不建任务。
-                        // #152：整行 updateById 改条件更新（refund_status 0→1），并发双审核只有一个置位成功。
-                        this.rechargeOrderMapper.update(null, new UpdateWrapper<RechargeOrder>()
-                                .eq("id", (Object)refundableOrder.getId())
-                                .eq("refund_status", (Object)0)
-                                .isNull("delete_time")
-                                .set("refund_status", Integer.valueOf(1))
-                                .set("update_time", Long.valueOf(System.currentTimeMillis() / 1000L)));
-                    }
+                    this.refundSettlement.settle(RefundSettlement.Intent.of(refund, refundableOrder, adminId,
+                            RefundSettlement.BusinessType.COURSE, refund.getRefundAmount()));
                 }
             }
             userCourse.setStatus(Integer.valueOf(2));
@@ -290,28 +264,10 @@ implements ICourseRefundService {
         }
         int refundStatus = order.getRefundStatus() == null ? 0 : order.getRefundStatus();
         if (refundStatus == 0 && refundAmount.compareTo(BigDecimal.ZERO) > 0) {
-            boolean wechatPaid = order.getPayWay() != null && order.getPayWay() == 2
-                    && StringUtils.isNotEmpty(order.getTransactionId());
-            boolean walletPaid = order.getPayWay() != null && order.getPayWay() == 1;
-            if (wechatPaid) {
-                // 同一退款申请已有任务时直接复用（重试补偿），不再二次放行/二次退款。
-                RefundTask existingTask = this.refundTaskMapper.selectOne(new QueryWrapper<RefundTask>()
-                        .eq("refund_id", refund.getId()).last("limit 1"));
-                if (existingTask == null) {
-                    this.claimOrderForWechatRefund(order);
-                    this.refundTaskService.createForRefund(refund, order);
-                }
-            } else if (walletPaid) {
-                this.financeRechargerService.refund(order.getId(), adminId, refundAmount);
-            } else {
-                // 线下转账/无交易号：与课程/券退款一致，审核即视为退款完成。
-                this.rechargeOrderMapper.update(null, new UpdateWrapper<RechargeOrder>()
-                        .eq("id", order.getId())
-                        .eq("refund_status", 0)
-                        .isNull("delete_time")
-                        .set("refund_status", 1)
-                        .set("update_time", TimeUtils.timestamp()));
-            }
+            // #220：出款统一走 RefundSettlement；同 refund_id 已有任务时复用（重试补偿），
+            // 渠道分派/幂等放行/失败记录见该模块。
+            this.refundSettlement.settle(RefundSettlement.Intent.of(refund, order, adminId,
+                    RefundSettlement.BusinessType.ACTIVITY, refundAmount));
         }
         int released = this.activitySignupCancelService.cancelOrderSignups(order.getId());
         log.info("活动退款审核通过: refundId={} orderId={} activityId={} released={} adminId={}",
@@ -399,59 +355,9 @@ implements ICourseRefundService {
             flow.setCreateTime(now);
             this.couponFlowMapper.insert(flow);
         }
-        if (refund.getRefundAmount() == null || refund.getRefundAmount().compareTo(BigDecimal.ZERO) <= 0) {
-            return;
-        }
-        Integer payWay = order.getPayWay();
-        boolean wechatPaid = payWay != null && payWay == 2 && StringUtils.isNotEmpty(order.getTransactionId());
-        boolean walletPaid = payWay != null && payWay == 1;
-        if (wechatPaid) {
-            // 微信退款必须异步 outbox，审核事务内不直连微信；失败可重试。
-            // #152：同单唯一放行——先锁 order 行并校验同单无未完结退款任务再落任务；
-            // 并发审核在同一行锁上串行，后到者看到同单已有任务直接拒绝，杜绝双重退款。
-            this.claimOrderForWechatRefund(order);
-            this.refundTaskService.createForRefund(refund, order);
-        } else if (walletPaid) {
-            this.financeRechargerService.refund(order.getId(), adminId, refund.getRefundAmount());
-        } else {
-            // 其它渠道（线下转账/历史无交易号）：与课程退款一致，审核即视为退款完成。
-            // #152：整行 updateById 改条件更新（refund_status 0→1），并发双审核只有一个置位成功。
-            this.rechargeOrderMapper.update(null, new UpdateWrapper<RechargeOrder>()
-                    .eq("id", (Object)order.getId())
-                    .eq("refund_status", (Object)0)
-                    .isNull("delete_time")
-                    .set("refund_status", Integer.valueOf(1))
-                    .set("update_time", Long.valueOf(now)));
-        }
-    }
-
-    /**
-     * #152 结算侧同单唯一放行：微信退款任务落库前对 order 行加锁（SELECT ... FOR UPDATE，
-     * 当前读，不受 REPEATABLE READ 快照影响），再以当前读检查同单（order_id）是否已存在退款任务。
-     *
-     * <p>任意状态的既有任务（待执行/执行中/成功/失败）都算：失败任务必须走 retry 复用原
-     * out_refund_no（微信侧幂等），绝不允许第二笔申请另起 out_refund_no 再放一笔。
-     * 并发审核在同一 order 行锁上串行：后到者要么看到 refund_status!=0（已退款），
-     * 要么看到同单已有任务（已放行未到账），均抛业务错误，保证同单只放行一笔退款任务。</p>
-     *
-     * <p>只能在「微信支付」分支内调用。钱包分支禁止调用：FinanceRechargerService 用
-     * REQUIRES_NEW 独立事务更新 order 行，外层先锁 order 行会让内层条件更新等待自身锁，
-     * 锁超时；钱包路径由该条件更新（refund_status 0→1，affected!=1 即拒绝）保证同单只退一次。</p>
-     */
-    private void claimOrderForWechatRefund(RechargeOrder order) {
-        RechargeOrder locked = (RechargeOrder)this.rechargeOrderMapper.selectOne(new QueryWrapper<RechargeOrder>()
-                .eq("id", (Object)order.getId()).last("limit 1 for update"));
-        if (locked == null || locked.getDeleteTime() != null
-                || !Integer.valueOf(1).equals(locked.getPayStatus())
-                || !Integer.valueOf(0).equals(locked.getRefundStatus() == null
-                        ? Integer.valueOf(0) : locked.getRefundStatus())) {
-            throw new OperateException("订单退款状态已变化，请刷新后重试");
-        }
-        RefundTask existingTask = (RefundTask)this.refundTaskMapper.selectOne(new QueryWrapper<RefundTask>()
-                .eq("order_id", (Object)locked.getId()).orderByAsc("id").last("limit 1 for update"));
-        if (existingTask != null) {
-            throw new OperateException("该订单已存在退款任务（退款处理中或已完成），请勿重复审核退款");
-        }
+        // #220：出款统一走 RefundSettlement；零元/负额不出款，渠道分派与失败记录见该模块。
+        this.refundSettlement.settle(RefundSettlement.Intent.of(refund, order, adminId,
+                RefundSettlement.BusinessType.COUPON, refund.getRefundAmount()));
     }
 
     private void attachRefundTasks(List<CourseRefundListedVo> list) {
@@ -522,7 +428,8 @@ implements ICourseRefundService {
                         ? courseClass.getTotalLessons()
                         : (order.getLessonCount() != null ? order.getLessonCount() : 0));
         BigDecimal payAmount = order.getOrderAmount() != null ? order.getOrderAmount() : refund.getPayAmount();
-        int effectiveUsedLessons = this.courseConsumeEffectiveService.countEffectiveUsedLessonsForEnrollment(userCourse);
+        // #222：与展示同口径——流水 FIFO + 调整流水增量（管理员确认过的口径修正计入已用）
+        int effectiveUsedLessons = this.courseConsumeEffectiveService.countDerivedUsedLessonsForEnrollment(userCourse);
         CourseRefundAmountUtil.Result calc = CourseRefundAmountUtil.resolve(
                 payAmount,
                 CourseRefundAmountUtil.resolveLessonFee(

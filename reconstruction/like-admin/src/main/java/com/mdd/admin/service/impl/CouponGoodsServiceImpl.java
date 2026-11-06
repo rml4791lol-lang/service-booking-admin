@@ -26,6 +26,12 @@ import com.mdd.common.entity.region.Area;
 import com.mdd.common.entity.student.Student;
 import com.mdd.common.entity.user.User;
 import com.mdd.common.exception.OperateException;
+import com.mdd.common.service.CouponEligibility;
+
+import static com.mdd.common.service.CouponEligibility.SCOPE_ALL;
+import static com.mdd.common.service.CouponEligibility.SCOPE_GROUP;
+import static com.mdd.common.service.CouponEligibility.SCOPE_PRIVATE;
+import static com.mdd.common.service.CouponEligibility.SCOPE_TRIAL;
 import com.mdd.common.mapper.RechargeOrderMapper;
 import com.mdd.common.mapper.coupon.CouponFlowMapper;
 import com.mdd.common.mapper.coupon.CouponGoodsMapper;
@@ -75,10 +81,8 @@ import java.util.stream.Collectors;
 @Service
 public class CouponGoodsServiceImpl implements ICouponGoodsService {
 
-    private static final String SCOPE_ALL = "all";
-    private static final String SCOPE_GROUP = "group";
-    private static final String SCOPE_PRIVATE = "private";
-    private static final String SCOPE_TRIAL = "trial";
+    // 适用范围常量（all/group/private/trial）自 #221 起引用 CouponEligibility（唯一来源），
+    // 与预约凭证 / 核销选券 / 小程序 mock 共用同一份口径，不再本地定义。
 
     /** 发券幂等窗口（秒）：同操作人+同商品+同手机号+同学员+同张数在此窗口内只允许一次。 */
     private static final long GRANT_IDEMPOTENT_SECONDS = 60L;
@@ -90,8 +94,8 @@ public class CouponGoodsServiceImpl implements ICouponGoodsService {
     private static final int FLOW_VOID = 4;
     private static final String OPERATOR_ADMIN = "admin";
 
-    /** 券实例状态：1=有效，2=已用完，3=已过期，4=已作废。 */
-    private static final int STATUS_VALID = 1;
+    /** 券实例状态：1=有效（引用 CouponEligibility，发券落库与判定同源），2=已用完，3=已过期，4=已作废。 */
+    private static final int STATUS_VALID = CouponEligibility.STATUS_VALID;
     private static final int STATUS_EXPIRED = 3;
     private static final int STATUS_VOID = 4;
 
@@ -120,6 +124,8 @@ public class CouponGoodsServiceImpl implements ICouponGoodsService {
     CourseClassMapper courseClassMapper;
     @Resource
     AreaMapper areaMapper;
+    @Resource
+    CouponEligibility couponEligibility;
 
     @Override
     public PageResult<CouponGoodsListedVo> list(PageValidate pageValidate, CouponGoodsSearchValidate searchValidate) {
@@ -835,19 +841,11 @@ public class CouponGoodsServiceImpl implements ICouponGoodsService {
     }
 
     /**
-     * 与小程序端 CouponServiceImpl#courseType 保持一致：
+     * 课程类型判定（#221 起委托 {@link CouponEligibility#courseType}，唯一实现）：
      * 名称含私教/一对一/一对二/一对三判私教，classType=1 判体验班，其余团课。
      */
     private String courseType(CourseClass course) {
-        String name = course.getName() == null ? "" : course.getName();
-        if (name.contains("一对一") || name.contains("一对二") || name.contains("一对三")
-                || name.contains("私教")) {
-            return SCOPE_PRIVATE;
-        }
-        if (course.getClassType() != null && course.getClassType() == 1) {
-            return SCOPE_TRIAL;
-        }
-        return SCOPE_GROUP;
+        return couponEligibility.courseType(course);
     }
 
     private String courseTypeText(String type) {

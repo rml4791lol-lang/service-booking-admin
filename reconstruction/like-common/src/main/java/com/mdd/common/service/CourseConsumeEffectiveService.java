@@ -6,13 +6,17 @@ import com.mdd.common.entity.course.CourseBooking;
 import com.mdd.common.entity.course.CourseConsumeLog;
 import com.mdd.common.entity.course.CourseLesson;
 import com.mdd.common.entity.course.UserCourse;
+import com.mdd.common.entity.course.UserCourseAdjustLog;
 import com.mdd.common.mapper.course.CourseAttendanceMapper;
 import com.mdd.common.mapper.course.CourseBookingMapper;
 import com.mdd.common.mapper.course.CourseConsumeLogMapper;
 import com.mdd.common.mapper.course.CourseLessonMapper;
+import com.mdd.common.mapper.course.UserCourseAdjustLogMapper;
 import com.mdd.common.mapper.course.UserCourseMapper;
 import com.mdd.common.util.CourseConsumeLogUtil;
+import com.mdd.common.util.CourseDerivedBalance;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +54,8 @@ public class CourseConsumeEffectiveService {
     CourseBookingMapper courseBookingMapper;
     @Resource
     CourseAttendanceMapper courseAttendanceMapper;
+    @Resource
+    UserCourseAdjustLogMapper userCourseAdjustLogMapper;
 
     /** 某条报名记录（课包）按消课流水重算出的已用课时。 */
     public int countEffectiveUsedLessonsForEnrollment(UserCourse enrollment) {
@@ -62,6 +68,114 @@ public class CourseConsumeEffectiveService {
                 .isNull("delete_time"));
         Map<Integer, Integer> allocated = this.allocateUsedLessonsForUser(enrollment.getUserId(), peers);
         return allocated.getOrDefault(enrollment.getId(), 0);
+    }
+
+    /**
+     * 某条报名记录的「流水口径已用」= 有效消课流水 + 调整流水增量（未 clamp）。
+     *
+     * <p>退款重算与展示共用本口径（#222）；退款侧由 {@code CourseRefundAmountUtil} 自行
+     * clamp 到 [0, total]。</p>
+     */
+    public int countDerivedUsedLessonsForEnrollment(UserCourse enrollment) {
+        if (enrollment == null || enrollment.getId() == null) {
+            return 0;
+        }
+        return this.countEffectiveUsedLessonsForEnrollment(enrollment)
+                + this.sumAdjustUsedDelta(enrollment.getId());
+    }
+
+    /** 单个课包的调整流水已用增量（la_user_course_adjust_log.change_used 之和，可为负）。 */
+    public int sumAdjustUsedDelta(Integer userCourseId) {
+        if (userCourseId == null || userCourseId <= 0) {
+            return 0;
+        }
+        return this.sumAdjustUsedDeltas(Collections.singletonList(userCourseId))
+                .getOrDefault(userCourseId, 0);
+    }
+
+    /** 批量取多个课包的调整流水已用增量（一次查询，列表页用）。 */
+    public Map<Integer, Integer> sumAdjustUsedDeltas(List<Integer> userCourseIds) {
+        LinkedHashMap<Integer, Integer> result = new LinkedHashMap<Integer, Integer>();
+        if (userCourseIds == null || userCourseIds.isEmpty()) {
+            return result;
+        }
+        List<Integer> distinctIds = userCourseIds.stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .collect(Collectors.toList());
+        if (distinctIds.isEmpty()) {
+            return result;
+        }
+        List<UserCourseAdjustLog> logs = this.userCourseAdjustLogMapper.selectList(
+                new QueryWrapper<UserCourseAdjustLog>().in("user_course_id", distinctIds.toArray()));
+        for (UserCourseAdjustLog log : logs) {
+            Integer ucId = log.getUserCourseId();
+            if (ucId == null) {
+                continue;
+            }
+            int delta = log.getChangeUsed() != null ? log.getChangeUsed() : 0;
+            result.merge(ucId, delta, Integer::sum);
+        }
+        return result;
+    }
+
+    /**
+     * 派生余额快照（#222）：消课流水 + 调整流水为唯一事实，不回填库里 remain_lessons。
+     * 替代 {@code UserCourseBalanceUtil#resolve}（已 @Deprecated）。
+     */
+    public CourseDerivedBalance deriveBalance(UserCourse enrollment, Integer effectiveUsedLessons, Integer statusOverride) {
+        Integer status = statusOverride != null ? statusOverride
+                : (enrollment != null ? enrollment.getStatus() : null);
+        int fifoUsed = enrollment == null || effectiveUsedLessons == null ? 0 : effectiveUsedLessons;
+        int adjustDelta = enrollment == null || enrollment.getId() == null
+                ? 0
+                : this.sumAdjustUsedDelta(enrollment.getId());
+        return CourseDerivedBalance.derive(enrollment != null ? enrollment.getTotalLessons() : null,
+                fifoUsed, adjustDelta, status);
+    }
+
+    /**
+     * 用户维度批量派生（列表/汇总页用）：FIFO 分配与调整增量各查一次，避免 N+1。
+     * 返回 userCourseId → 派生快照。
+     */
+    public Map<Integer, CourseDerivedBalance> deriveBalanceForUser(Integer userId, List<UserCourse> enrollments) {
+        LinkedHashMap<Integer, CourseDerivedBalance> result = new LinkedHashMap<Integer, CourseDerivedBalance>();
+        if (userId == null || enrollments == null || enrollments.isEmpty()) {
+            return result;
+        }
+        Map<Integer, Integer> usedByUserCourseId = this.allocateUsedLessonsForUser(userId, enrollments);
+        List<Integer> ucIds = enrollments.stream()
+                .map(UserCourse::getId)
+                .filter(id -> id != null && id > 0)
+                .collect(Collectors.toList());
+        Map<Integer, Integer> deltas = this.sumAdjustUsedDeltas(ucIds);
+        for (UserCourse uc : enrollments) {
+            if (uc == null || uc.getId() == null) {
+                continue;
+            }
+            int fifoUsed = usedByUserCourseId.getOrDefault(uc.getId(), 0);
+            int delta = deltas.getOrDefault(uc.getId(), 0);
+            result.put(uc.getId(), CourseDerivedBalance.derive(uc.getTotalLessons(), fifoUsed, delta, uc.getStatus()));
+        }
+        return result;
+    }
+
+    /**
+     * 多用户批量派生（后台老课包列表用）：入参须是这些用户的<b>全部</b>课包
+     * （FIFO 分配才能对），返回 userCourseId → 派生快照。
+     */
+    public Map<Integer, CourseDerivedBalance> deriveBalanceForUserRows(List<UserCourse> enrollments) {
+        LinkedHashMap<Integer, CourseDerivedBalance> result = new LinkedHashMap<Integer, CourseDerivedBalance>();
+        if (enrollments == null || enrollments.isEmpty()) {
+            return result;
+        }
+        Map<Integer, List<UserCourse>> groups = enrollments.stream()
+                .filter(uc -> uc.getUserId() != null)
+                .collect(Collectors.groupingBy(UserCourse::getUserId, LinkedHashMap::new, Collectors.toList()));
+        for (Map.Entry<Integer, List<UserCourse>> entry : groups.entrySet()) {
+            result.putAll(this.deriveBalanceForUser(entry.getKey(), entry.getValue()));
+        }
+        return result;
     }
 
     /**

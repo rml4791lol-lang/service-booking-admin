@@ -55,6 +55,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.mdd.admin.LikeAdminThreadLocal;
 import com.mdd.admin.service.ICourseClassService;
 import com.mdd.admin.service.IUserCourseAccountService;
+import com.mdd.common.service.CourseConsumeEffectiveService;
+import com.mdd.common.util.CourseDerivedBalance;
 import com.mdd.admin.validate.commons.PageValidate;
 import com.mdd.admin.validate.course.CourseClassCreateValidate;
 import com.mdd.admin.validate.course.CourseClassSearchValidate;
@@ -140,6 +142,8 @@ implements ICourseClassService {
     AreaMapper areaMapper;
     @Resource
     IUserCourseAccountService userCourseAccountService;
+    @Resource
+    CourseConsumeEffectiveService courseConsumeEffectiveService;
 
     public PageResult<CourseClassListedVo> list(PageValidate pageValidate, CourseClassSearchValidate searchValidate) {
         Agent agent;
@@ -622,7 +626,9 @@ implements ICourseClassService {
             RechargeOrder linkedOrder = uc.getOrderId() != null && uc.getOrderId() > 0 ? (RechargeOrder)this.rechargeOrderMapper.selectById((Serializable)uc.getOrderId()) : null;
             Integer enrollmentStatus = linkedOrder != null && linkedOrder.getRefundStatus() != null && linkedOrder.getRefundStatus() == 1 ? 2 : uc.getStatus();
             int effectiveUsedLessons = this.userCourseAccountService.countEffectiveUsedLessonsForEnrollment(uc);
-            UserCourseBalanceUtil.Snapshot balance = UserCourseBalanceUtil.resolve((Integer)uc.getTotalLessons(), (Integer)uc.getUsedLessons(), (Integer)uc.getRemainLessons(), (Integer)effectiveUsedLessons, (Integer)enrollmentStatus);
+            // #222：流水派生（含调整流水增量），替代 UserCourseBalanceUtil 的库里回填兜底
+            CourseDerivedBalance balance = CourseDerivedBalance.derive(uc.getTotalLessons(), effectiveUsedLessons,
+                    this.courseConsumeEffectiveService.sumAdjustUsedDelta(uc.getId()), enrollmentStatus);
             item.put("status", balance.getStatus());
             item.put("statusText", balance.getStatus() == 2 ? "\u5df2\u9000\u8bfe" : (balance.getStatus() == 1 ? "\u5df2\u5b8c\u6210" : "\u5b66\u4e60\u4e2d"));
             item.put("totalLessons", balance.getTotalLessons());

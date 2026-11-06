@@ -3,6 +3,13 @@
  */
 package com.mdd.common.util;
 
+/**
+ * @deprecated #222 起课时以消课流水为唯一事实，本类的余额口径已废弃：
+ * 请改用 {@link com.mdd.common.service.CourseConsumeEffectiveService}（流水 FIFO 分配 +
+ * 调整流水增量）与 {@link CourseDerivedBalance#derive}（派生余额，不回填库里 remain_lessons）。
+ * 仍保留的 {@link #statusAfterLessonReturned}（取消课节回退状态）不受影响。
+ */
+@Deprecated
 public final class UserCourseBalanceUtil {
     private static final int STATUS_LEARNING = 0;
     private static final int STATUS_COMPLETED = 1;
@@ -11,6 +18,12 @@ public final class UserCourseBalanceUtil {
     private UserCourseBalanceUtil() {
     }
 
+    /**
+     * @deprecated 流水派生替代：{@code CourseConsumeEffectiveService#deriveBalance} /
+     * {@link CourseDerivedBalance#derive}。本方法含「库里 remain 回填」旧兜底，会把
+     * 「上完课但未扣剩余」还原成一节没上，禁止在新代码中使用。
+     */
+    @Deprecated
     public static Snapshot resolve(Integer totalLessons, Integer storedUsedLessons, Integer storedRemainLessons, Integer effectiveUsedLessons, Integer storedStatus) {
         int total = UserCourseBalanceUtil.nonNegative(totalLessons);
         int effectiveUsed = UserCourseBalanceUtil.clamp(UserCourseBalanceUtil.nonNegative(effectiveUsedLessons), 0, total);

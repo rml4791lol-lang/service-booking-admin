@@ -79,7 +79,8 @@ import com.mdd.common.service.LessonCommissionService;
 import com.mdd.common.settlement.SettlementSigner;
 import com.mdd.common.util.ClassScheduleUtil;
 import com.mdd.common.util.StringUtils;
-import com.mdd.common.util.UserCourseBalanceUtil;
+import com.mdd.common.service.CourseConsumeEffectiveService;
+import com.mdd.common.util.CourseDerivedBalance;
 import com.mdd.common.util.UserCourseEligibilityUtil;
 import java.io.Serializable;
 import java.math.BigDecimal;
@@ -128,6 +129,8 @@ implements ICourseManualConsumeService {
     AgentMapper agentMapper;
     @Resource
     IUserCourseAccountService userCourseAccountService;
+    @Resource
+    CourseConsumeEffectiveService courseConsumeEffectiveService;
 
     public List<Map<String, Object>> listByClass(Integer classId) {
         CourseClass courseClass = this.getAccessibleClass(classId);
@@ -483,7 +486,9 @@ implements ICourseManualConsumeService {
                 candidate.setStudentId(resolvedStudentId);
             }
             int effectiveUsed = this.userCourseAccountService.countEffectiveUsedLessonsForEnrollment(candidate);
-            UserCourseBalanceUtil.Snapshot balance = UserCourseBalanceUtil.resolve((Integer)candidate.getTotalLessons(), (Integer)candidate.getUsedLessons(), (Integer)candidate.getRemainLessons(), (Integer)effectiveUsed, (Integer)candidate.getStatus());
+            // #222：流水派生（含调整流水增量），替代 UserCourseBalanceUtil 的库里回填兜底
+            CourseDerivedBalance balance = CourseDerivedBalance.derive(candidate.getTotalLessons(), effectiveUsed,
+                    this.courseConsumeEffectiveService.sumAdjustUsedDelta(candidate.getId()), candidate.getStatus());
             if (balance.getRemainLessons() <= 0) continue;
             this.syncEnrollmentBalance(candidate, balance);
             consumable.add(candidate);
@@ -510,7 +515,7 @@ implements ICourseManualConsumeService {
         return (UserCourse)consumable.get(0);
     }
 
-    private void syncEnrollmentBalance(UserCourse uc, UserCourseBalanceUtil.Snapshot balance) {
+    private void syncEnrollmentBalance(UserCourse uc, CourseDerivedBalance balance) {
         boolean dirty = false;
         if (uc.getRemainLessons() == null || uc.getRemainLessons().intValue() != balance.getRemainLessons()) {
             uc.setRemainLessons(Integer.valueOf(balance.getRemainLessons()));
