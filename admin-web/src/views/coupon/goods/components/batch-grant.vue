@@ -7,10 +7,10 @@
         :close-on-click-modal="false"
         @closed="resetAll"
     >
-        <!-- 第一步：上传 CSV -->
+        <!-- 第一步：上传 Excel/CSV -->
         <div v-if="step === 'upload'">
             <el-alert
-                title="CSV 表头需包含 mobile、goodsId、quantity；studentId、remark 可选。单次最多 500 行。"
+                title="支持 Excel（.xlsx/.xls）或 CSV，中文表头需包含 手机号、券商品ID、张数；学员ID、备注可选。单次最多 500 行。"
                 type="info"
                 :closable="false"
                 show-icon
@@ -20,17 +20,17 @@
                 <input
                     ref="fileInputRef"
                     type="file"
-                    accept=".csv,text/csv"
+                    accept=".xlsx,.xls,.csv,text/csv"
                     class="hidden"
                     @change="handleFileChange"
                 >
-                <el-button type="primary" @click="fileInputRef?.click()">选择 CSV 文件</el-button>
+                <el-button type="primary" @click="fileInputRef?.click()">选择 Excel/CSV 文件</el-button>
                 <el-button class="ml-2" @click="downloadTemplate">下载模板</el-button>
                 <div class="mt-3 text-sm text-gray-500">
-                    表头示例：mobile,goodsId,quantity,studentId,remark
+                    表头示例：手机号、券商品ID、张数、学员ID（选填）、备注（选填）
                 </div>
                 <div class="mt-1 text-xs text-gray-400">
-                    文件请用 UTF-8 编码；学员 ID 留空表示账号级券。
+                    Excel 直接上传；CSV 请用 UTF-8 编码；学员 ID 留空表示账号级券。
                 </div>
             </div>
             <el-alert
@@ -172,7 +172,8 @@
 import { getCouponGoodsList, grantCouponBatch } from '@/api/couponGoods'
 import { getCouponStudents } from '@/api/coupon'
 import feedback from '@/utils/feedback'
-import { downloadCsv, parseCsvTable, runWithConcurrency } from '@/utils/csv'
+import { downloadCsv, runWithConcurrency } from '@/utils/csv'
+import { parseCouponSheet } from '@/utils/importSheet'
 
 const props = defineProps({
     modelValue: {
@@ -255,10 +256,12 @@ function previewRowClass({ row }: { row: GrantRow }) {
 }
 
 function downloadTemplate() {
-    downloadCsv('批量发券模板.csv', [
-        ['mobile', 'goodsId', 'quantity', 'studentId', 'remark'],
-        ['13800000000', '1', '1', '', '老课包转化']
-    ])
+    const link = document.createElement('a')
+    link.href = '/templates/批量发券模板.xlsx'
+    link.download = '批量发券模板.xlsx'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
 }
 
 async function handleFileChange(event: Event) {
@@ -271,25 +274,28 @@ async function handleFileChange(event: Event) {
         parseError.value = '文件超过 4MB，请拆分后再导入'
         return
     }
-    const text = await file.text()
-    await parseFile(text)
+    await parseFile(await file.arrayBuffer(), file.name)
 }
 
-async function parseFile(text: string) {
+async function parseFile(data: ArrayBuffer, filename: string) {
     parseError.value = ''
-    const table = parseCsvTable(text)
-    if (!table.headers.length) {
-        parseError.value = 'CSV 为空，请检查文件内容'
+    let table: ReturnType<typeof parseCouponSheet>
+    try {
+        table = parseCouponSheet(data, filename)
+    } catch (error) {
+        parseError.value = error instanceof Error ? error.message : '文件解析失败，请检查格式'
         return
     }
-    const required = ['mobile', 'goodsid', 'quantity']
-    const missing = required.filter((name) => !table.headers.includes(name))
-    if (missing.length) {
-        parseError.value = `CSV 表头缺少 ${missing.join('、')}；需包含 mobile、goodsId、quantity（studentId、remark 可选）`
+    if (!table.headers.length) {
+        parseError.value = '文件为空，请检查内容'
+        return
+    }
+    if (table.missing.length) {
+        parseError.value = `表头缺少 ${table.missing.join('、')}；需包含 手机号、券商品ID、张数（学员ID、备注可选）`
         return
     }
     if (!table.rows.length) {
-        parseError.value = 'CSV 没有数据行'
+        parseError.value = '文件没有数据行'
         return
     }
     if (table.rows.length > MAX_ROWS) {
@@ -297,18 +303,11 @@ async function parseFile(text: string) {
         return
     }
 
-    const column = (name: string) => table.headers.indexOf(name)
-    const mobileIndex = column('mobile')
-    const goodsIndex = column('goodsid')
-    const quantityIndex = column('quantity')
-    const studentIndex = column('studentid')
-    const remarkIndex = column('remark')
-
     previewRows.value = table.rows.map((cells, index) => {
-        const mobile = String(cells[mobileIndex] || '').trim()
-        const goodsIdText = String(cells[goodsIndex] || '').trim()
-        const quantityText = String(cells[quantityIndex] || '').trim()
-        const studentIdText = studentIndex >= 0 ? String(cells[studentIndex] || '').trim() : ''
+        const mobile = cells.mobile
+        const goodsIdText = cells.goodsId
+        const quantityText = cells.quantity
+        const studentIdText = cells.studentId
         const goodsId = Number(goodsIdText)
         const quantity = Number(quantityText)
         const studentId = studentIdText === '' ? 0 : Number(studentIdText)
@@ -325,7 +324,7 @@ async function parseFile(text: string) {
             quantityText,
             quantity,
             quantityOk: Number.isInteger(quantity) && quantity >= 1 && quantity <= 99,
-            remark: remarkIndex >= 0 ? String(cells[remarkIndex] || '').trim() : '',
+            remark: cells.remark,
             accountState: 'idle',
             accountLabel: ''
         }
@@ -457,7 +456,7 @@ function downloadFailures() {
         ]
     })
     downloadCsv(`批量发券失败行-${Date.now()}.csv`, [
-        ['mobile', 'goodsId', 'quantity', 'studentId', 'remark', 'reason'],
+        ['手机号', '券商品ID', '张数', '学员ID', '备注', '失败原因'],
         ...lines
     ])
 }

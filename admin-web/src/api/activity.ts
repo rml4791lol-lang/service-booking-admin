@@ -41,6 +41,22 @@ export function getApplyGroups(params: any) {
     return request.get({ url: '/activity/apply/list', params })
 }
 
+// ---------- 活动报名名单（含支付状态） ----------
+// 一人一行；payStatus：-1 免费 / 0 待支付 / 1 已支付 / 4 已取消
+export function getActivitySignupList(params: any) {
+    return request.get({ url: '/activity/signup/list', params })
+}
+
+// 导出活动报名名单（列含支付状态；code=2 时由 request 钩子打开下载地址）
+export function exportActivitySignups(params: any) {
+    return request.get({ url: '/activity/signup/export', params })
+}
+
+// 后台取消活动报名（#213 C3）：免费直接取消释放名额，付费只生成待审核退款申请。
+export function cancelActivitySignup(params: any) {
+    return request.post({ url: '/activity/enroll/cancel', params })
+}
+
 // ---------- 活动报名异常（满员后支付/超员生效，#61） ----------
 // 异常报名列表（status: 0=待处理 1=已处理 2=已退款）
 export function getEnrollExceptions(params?: any) {

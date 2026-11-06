@@ -7,10 +7,10 @@
         :close-on-click-modal="false"
         @closed="resetAll"
     >
-        <!-- 第一步：上传 CSV -->
+        <!-- 第一步：上传 Excel/CSV -->
         <div v-if="step === 'upload'">
             <el-alert
-                title="CSV 表头需包含 mobile、amount、remark；amount 正数增加、负数扣减，单次最多 500 行。"
+                title="支持 Excel（.xlsx/.xls）或 CSV，中文表头需包含 手机号、金额、原因；金额正数增加、负数扣减，单次最多 500 行。"
                 type="info"
                 :closable="false"
                 show-icon
@@ -20,15 +20,17 @@
                 <input
                     ref="fileInputRef"
                     type="file"
-                    accept=".csv,text/csv"
+                    accept=".xlsx,.xls,.csv,text/csv"
                     class="hidden"
                     @change="handleFileChange"
                 >
-                <el-button type="primary" @click="fileInputRef?.click()">选择 CSV 文件</el-button>
+                <el-button type="primary" @click="fileInputRef?.click()">选择 Excel/CSV 文件</el-button>
                 <el-button class="ml-2" @click="downloadTemplate">下载模板</el-button>
-                <div class="mt-3 text-sm text-gray-500">表头示例：mobile,amount,remark</div>
+                <div class="mt-3 text-sm text-gray-500">
+                    表头示例：手机号、金额（正数增加/负数扣减）、原因
+                </div>
                 <div class="mt-1 text-xs text-gray-400">
-                    文件请用 UTF-8 编码；扣减不能把余额扣成负数。
+                    Excel 直接上传；CSV 请用 UTF-8 编码；扣减不能把余额扣成负数。
                 </div>
             </div>
             <el-alert
@@ -178,7 +180,8 @@
 <script lang="ts" setup name="consumerBatchAdjust">
 import { adjustMoneyBatch, getUserList } from '@/api/consumer'
 import feedback from '@/utils/feedback'
-import { downloadCsv, parseCsvTable, runWithConcurrency } from '@/utils/csv'
+import { downloadCsv, runWithConcurrency } from '@/utils/csv'
+import { parseWalletSheet } from '@/utils/importSheet'
 
 const props = defineProps({
     modelValue: {
@@ -265,11 +268,12 @@ function formatAmount(amount: number) {
 }
 
 function downloadTemplate() {
-    downloadCsv('批量调余额模板.csv', [
-        ['mobile', 'amount', 'remark'],
-        ['13800000000', '100', '活动补差'],
-        ['13800000000', '-50', '扣回多收']
-    ])
+    const link = document.createElement('a')
+    link.href = '/templates/批量调余额模板.xlsx'
+    link.download = '批量调余额模板.xlsx'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
 }
 
 async function handleFileChange(event: Event) {
@@ -281,25 +285,28 @@ async function handleFileChange(event: Event) {
         parseError.value = '文件超过 4MB，请拆分后再导入'
         return
     }
-    const text = await file.text()
-    await parseFile(text)
+    await parseFile(await file.arrayBuffer(), file.name)
 }
 
-async function parseFile(text: string) {
+async function parseFile(data: ArrayBuffer, filename: string) {
     parseError.value = ''
-    const table = parseCsvTable(text)
-    if (!table.headers.length) {
-        parseError.value = 'CSV 为空，请检查文件内容'
+    let table: ReturnType<typeof parseWalletSheet>
+    try {
+        table = parseWalletSheet(data, filename)
+    } catch (error) {
+        parseError.value = error instanceof Error ? error.message : '文件解析失败，请检查格式'
         return
     }
-    const required = ['mobile', 'amount', 'remark']
-    const missing = required.filter((name) => !table.headers.includes(name))
-    if (missing.length) {
-        parseError.value = `CSV 表头缺少 ${missing.join('、')}；需包含 mobile、amount、remark`
+    if (!table.headers.length) {
+        parseError.value = '文件为空，请检查内容'
+        return
+    }
+    if (table.missing.length) {
+        parseError.value = `表头缺少 ${table.missing.join('、')}；需包含 手机号、金额、原因`
         return
     }
     if (!table.rows.length) {
-        parseError.value = 'CSV 没有数据行'
+        parseError.value = '文件没有数据行'
         return
     }
     if (table.rows.length > MAX_ROWS) {
@@ -307,15 +314,10 @@ async function parseFile(text: string) {
         return
     }
 
-    const column = (name: string) => table.headers.indexOf(name)
-    const mobileIndex = column('mobile')
-    const amountIndex = column('amount')
-    const remarkIndex = column('remark')
-
     previewRows.value = table.rows.map((cells, index) => {
-        const mobile = String(cells[mobileIndex] || '').trim()
-        const amountText = String(cells[amountIndex] || '').trim()
-        const remark = String(cells[remarkIndex] || '').trim()
+        const mobile = cells.mobile
+        const amountText = cells.amount
+        const remark = cells.remark
         const amount = Number(amountText)
         const amountOk =
             AMOUNT_PATTERN.test(amountText) &&
@@ -460,7 +462,7 @@ function downloadFailures() {
         ]
     })
     downloadCsv(`批量调余额失败行-${Date.now()}.csv`, [
-        ['mobile', 'amount', 'remark', 'reason'],
+        ['手机号', '金额', '原因', '失败原因'],
         ...lines
     ])
 }

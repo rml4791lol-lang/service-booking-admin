@@ -1,6 +1,6 @@
 # 项目配置
 like:
-  unique-identification: ${APP_UNIQUE_IDENTIFICATION:dev-local-salt}
+  unique-identification: lxt-local-dev-salt
   # 对外访问域名 (用于拼接图片等资源的绝对路径)
   url: https://zzty02.starvitech.com
   upload-directory: /www/uploads/likeadmin-java/ # 上传目录
@@ -40,7 +40,7 @@ spring:
     type: com.zaxxer.hikari.HikariDataSource # 数据源类型
     driver-class-name: com.mysql.jdbc.Driver # MySql的驱动
     username: root # 数据库账号
-    password: ${MYSQL_ROOT_PASSWORD:} # 数据库密码
+    password: ${MYSQL_ROOT_PASSWORD:} # 数据库密码（环境变量注入）
     hikari:
       connection-timeout: 30000     # 等待连接分配连接的最大时长(毫秒),超出时长还没可用连接则发送SQLException,默认30秒
       minimum-idle: 5               # 最小连接数

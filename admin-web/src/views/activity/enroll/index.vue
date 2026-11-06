@@ -208,6 +208,7 @@
                             <div class="text-base font-medium">报名名单</div>
                             <div class="text-tx-secondary text-sm mt-1">
                                 按链接或场次查看；同一场次 + 手机号 + 学员名只保留一条，重复提交会被拒绝。
+                                本表由客服报名链接收集，不含收款；家长是否已付款见「活动报名名单」。
                             </div>
                         </div>
                         <div class="flex flex-wrap items-center justify-end gap-2">
@@ -386,6 +387,200 @@
                     </el-table>
                     <div class="mt-4 flex justify-end">
                         <pagination v-model="rosterPager" @change="getRoster" />
+                    </div>
+                </el-card>
+            </el-tab-pane>
+
+            <el-tab-pane label="活动报名名单" name="signup">
+                <el-card class="!border-none" shadow="never">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <div class="text-base font-medium">活动报名名单（含支付状态）</div>
+                            <div class="text-tx-secondary text-sm mt-1">
+                                家长在小程序活动页报名，一人一行；支付状态取自关联订单：
+                                已支付 / 待支付 / 已取消 / 免费（免费活动不生成订单）。
+                                客服报名链接（「报名名单」）只收集信息、不收款，支付状态看这里。
+                            </div>
+                        </div>
+                        <el-button
+                            v-perms="['activity/enroll/export']"
+                            type="primary"
+                            :loading="signupExporting"
+                            @click="exportSignupRoster"
+                        >
+                            导出活动报名名单
+                        </el-button>
+                    </div>
+
+                    <el-form class="mt-4 mb-[-16px]" :inline="true" :model="signupQuery">
+                        <el-form-item label="活动">
+                            <el-select
+                                v-model="signupQuery.activityId"
+                                class="w-[260px]"
+                                filterable
+                                clearable
+                                placeholder="全部活动"
+                            >
+                                <el-option
+                                    v-for="item in signupActivityOptions"
+                                    :key="item.id"
+                                    :label="`#${item.id} ${item.title || ''}`"
+                                    :value="item.id"
+                                />
+                            </el-select>
+                        </el-form-item>
+                        <el-form-item label="报名状态">
+                            <el-select
+                                v-model="signupQuery.status"
+                                class="w-[120px]"
+                                clearable
+                                placeholder="全部"
+                            >
+                                <el-option label="待支付" :value="0" />
+                                <el-option label="已支付" :value="1" />
+                                <el-option label="已取消" :value="3" />
+                            </el-select>
+                        </el-form-item>
+                        <el-form-item label="支付状态">
+                            <el-select
+                                v-model="signupQuery.payStatus"
+                                class="w-[120px]"
+                                clearable
+                                placeholder="全部"
+                            >
+                                <el-option label="已支付" :value="1" />
+                                <el-option label="待支付" :value="0" />
+                                <el-option label="已取消" :value="4" />
+                                <el-option label="免费" :value="-1" />
+                            </el-select>
+                        </el-form-item>
+                        <el-form-item label="关键词">
+                            <el-input
+                                v-model="signupQuery.keyword"
+                                class="w-[190px]"
+                                clearable
+                                placeholder="手机号/学员/订单号"
+                                @keyup.enter="resetSignupPage"
+                            />
+                        </el-form-item>
+                        <el-form-item label="报名时间">
+                            <el-date-picker
+                                v-model="signupDateRange"
+                                type="daterange"
+                                value-format="YYYY-MM-DD"
+                                start-placeholder="开始日期"
+                                end-placeholder="结束日期"
+                                class="!w-[240px]"
+                            />
+                        </el-form-item>
+                        <el-form-item>
+                            <el-button type="primary" @click="resetSignupPage">查询</el-button>
+                            <el-button @click="resetSignupParams">重置</el-button>
+                        </el-form-item>
+                    </el-form>
+
+                    <div class="dedupe-panel mt-4">
+                        <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+                            <span class="font-medium">汇总</span>
+                            <span>
+                                共 <b>{{ signupExtend.totalCount || 0 }}</b> 条，
+                                去重后 <b>{{ signupExtend.uniqueCount || 0 }}</b> 人
+                            </span>
+                            <el-tag size="small" type="success">
+                                已支付 {{ signupExtend.paidCount || 0 }} 人
+                            </el-tag>
+                            <el-tag size="small" type="warning">
+                                未支付 {{ signupExtend.unpaidCount || 0 }} 人
+                            </el-tag>
+                            <el-tag size="small" type="info" effect="plain">
+                                免费 {{ signupExtend.freeCount || 0 }} 人
+                            </el-tag>
+                            <span class="text-xs text-gray-400">
+                                已支付金额 {{ activityMoney(signupExtend.paidAmount) }} ·
+                                规则：{{ signupExtend.dedupeRule || '同一活动 + 同一学员（一人一行）' }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <el-table
+                        class="mt-4"
+                        size="large"
+                        table-layout="fixed"
+                        v-loading="signupPager.loading"
+                        :data="signupPager.lists"
+                        empty-text="暂无活动报名"
+                    >
+                        <el-table-column label="报名时间" prop="createdAt" width="145" />
+                        <el-table-column label="活动 / 地点" min-width="220" show-overflow-tooltip>
+                            <template #default="{ row }">
+                                <div class="font-medium">{{ row.activityTitle || '-' }}</div>
+                                <div class="text-xs text-gray-400">
+                                    {{ row.activityDate }} {{ row.activityTime }} ·
+                                    {{ row.activityPlace || row.areaName || '-' }}
+                                </div>
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="家长 / 手机" min-width="150">
+                            <template #default="{ row }">
+                                <div>{{ row.parentName || '-' }}</div>
+                                <div class="text-xs text-gray-400">{{ row.parentMobile || '-' }}</div>
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="学员" prop="studentName" width="120" />
+                        <el-table-column label="报名状态" width="95">
+                            <template #default="{ row }">
+                                <el-tag :type="signupStatusTag(row.status)" size="small">
+                                    {{ row.statusText }}
+                                </el-tag>
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="支付状态" width="95">
+                            <template #default="{ row }">
+                                <el-tag
+                                    :type="payStatusTag(row.payStatus)"
+                                    :effect="Number(row.payStatus) === -1 ? 'plain' : 'light'"
+                                    size="small"
+                                >
+                                    {{ row.payStatusText }}
+                                </el-tag>
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="订单 / 金额" min-width="200">
+                            <template #default="{ row }">
+                                <template v-if="row.orderSn">
+                                    <code class="token-text">{{ row.orderSn }}</code>
+                                    <div class="text-xs text-gray-400">
+                                        {{ activityMoney(row.orderAmount) }} ·
+                                        {{ row.payWayText || '-' }}
+                                        <span v-if="row.payTime"> · {{ row.payTime }}</span>
+                                    </div>
+                                </template>
+                                <span v-else class="text-xs text-gray-400">
+                                    {{ Number(row.payStatus) === -1 ? '免费活动，无订单' : '未生成订单' }}
+                                </span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="操作" width="120" fixed="right">
+                            <template #default="{ row }">
+                                <el-button
+                                    v-if="row.cancelable"
+                                    v-perms="['activity/enroll/cancel']"
+                                    type="danger"
+                                    link
+                                    :loading="cancelSignupSavingId === row.id"
+                                    @click="cancelSignup(row)"
+                                >
+                                    取消报名
+                                </el-button>
+                                <el-tag v-else-if="row.refundPending" type="warning" size="small">
+                                    退款审核中
+                                </el-tag>
+                                <span v-else class="text-xs text-gray-400">—</span>
+                            </template>
+                        </el-table-column>
+                    </el-table>
+                    <div class="mt-4 flex justify-end">
+                        <pagination v-model="signupPager" @change="getSignups" />
                     </div>
                 </el-card>
             </el-tab-pane>
@@ -1067,8 +1262,11 @@ import {
     activityEdit,
     activityList,
     activityStatus,
+    cancelActivitySignup,
     createEnrollLink,
+    exportActivitySignups,
     exportEnrollments,
+    getActivitySignupList,
     getApplyGroups,
     getEnrollExceptionDetail,
     getEnrollExceptions,
@@ -1088,7 +1286,7 @@ import feedback from '@/utils/feedback'
 
 const { toClipboard } = useClipboard()
 
-const COURSE_TYPES = ['学科', '艺术', '体育', '科技', '其他']
+const COURSE_TYPES = ['篮球', '足球', '体适能', '跳绳', '羽毛球', '其他']
 const courseTypes = COURSE_TYPES
 const activeTab = ref('links')
 
@@ -1141,6 +1339,33 @@ const {
 
 const rosterExtend = computed<any>(() => rosterPager.extend || {})
 
+// ---------- 活动报名名单（含支付状态） ----------
+// payStatus：-1 免费 / 0 待支付 / 1 已支付 / 4 已取消；报名状态沿用 signup.status（0/1/3）。
+const signupQuery = reactive<any>({
+    activityId: '',
+    status: '',
+    payStatus: '',
+    keyword: '',
+    dateStart: '',
+    dateEnd: ''
+})
+const signupDateRange = ref<string[]>([])
+const signupActivityOptions = ref<any[]>([])
+const signupExporting = ref(false)
+const cancelSignupSavingId = ref(0)
+
+const {
+    pager: signupPager,
+    getLists: getSignups,
+    resetPage: resetSignupPage,
+    resetParams: resetSignupParamsBase
+} = usePaging({
+    fetchFun: getActivitySignupList,
+    params: signupQuery
+})
+
+const signupExtend = computed<any>(() => signupPager.extend || {})
+
 const applyQuery = reactive<any>({
     courseType: '',
     status: ''
@@ -1190,6 +1415,7 @@ const expireDialog = reactive<any>({
 })
 
 let rosterLoaded = false
+let signupLoaded = false
 let applyLoaded = false
 let activityLoaded = false
 
@@ -1445,6 +1671,11 @@ watch(rosterDateRange, (value: string[]) => {
     rosterQuery.dateEnd = value?.[1] || ''
 })
 
+watch(signupDateRange, (value: string[]) => {
+    signupQuery.dateStart = value?.[0] || ''
+    signupQuery.dateEnd = value?.[1] || ''
+})
+
 watch(
     () => rosterQuery.sessionId,
     () => {
@@ -1463,6 +1694,11 @@ watch(activeTab, (tab) => {
         rosterLoaded = true
         loadLinkOptions()
         getRoster()
+    }
+    if (tab === 'signup' && !signupLoaded) {
+        signupLoaded = true
+        loadSignupActivities()
+        getSignups()
     }
     if (tab === 'apply' && !applyLoaded) {
         applyLoaded = true
@@ -1632,6 +1868,85 @@ async function exportRoster() {
     }
 }
 
+// ---------- 活动报名名单（含支付状态） ----------
+async function loadSignupActivities() {
+    try {
+        const data: any = await activityList({ page_no: 1, page_size: 60 })
+        signupActivityOptions.value = data?.lists || []
+    } catch {
+        signupActivityOptions.value = []
+    }
+}
+
+function signupParams() {
+    return {
+        page_no: signupPager.page,
+        page_size: signupPager.size,
+        activityId: signupQuery.activityId,
+        status: signupQuery.status,
+        payStatus: signupQuery.payStatus,
+        keyword: signupQuery.keyword,
+        dateStart: signupQuery.dateStart,
+        dateEnd: signupQuery.dateEnd
+    }
+}
+
+function resetSignupParams() {
+    signupDateRange.value = []
+    signupQuery.dateStart = ''
+    signupQuery.dateEnd = ''
+    resetSignupParamsBase()
+}
+
+async function exportSignupRoster() {
+    signupExporting.value = true
+    try {
+        const data: any = await exportActivitySignups(signupParams())
+        if (data?.url) {
+            feedback.msgSuccess(`已生成 ${data.rowCount || 0} 条活动报名记录，开始下载`)
+        }
+    } finally {
+        signupExporting.value = false
+    }
+}
+
+// 后台取消活动报名（#213 C3）：免费直接释放名额；已支付只生成退款申请，
+// 由「退款管理」审核通过后才退款并释放名额（不在本入口直接调资金通道）。
+async function cancelSignup(row: any) {
+    const paid = Number(row.payStatus) === 1
+    let remark = ''
+    try {
+        const result: any = await feedback.prompt(
+            paid
+                ? '该报名已支付：提交后生成退款申请，需在「退款管理」审核通过后按原支付方式退回并释放名额。请填写取消原因（选填）。'
+                : '取消后立即释放该报名占用的名额。请填写取消原因（选填）。',
+            '取消报名',
+            {
+                inputPlaceholder: '取消原因（选填，最多 500 字）',
+                inputValidator: (value: string) =>
+                    !value || String(value).length <= 500 || '取消原因最多 500 字'
+            }
+        )
+        remark = result?.value || ''
+    } catch {
+        return
+    }
+    cancelSignupSavingId.value = row.id
+    try {
+        const data: any = await cancelActivitySignup({ signupId: row.id, remark })
+        if (data?.mode === 'refunding') {
+            feedback.msgSuccess('已提交退款申请，请在「退款管理」审核')
+        } else {
+            feedback.msgSuccess('已取消报名，名额已释放')
+        }
+        await getSignups()
+    } catch {
+        // 请求层已提示
+    } finally {
+        cancelSignupSavingId.value = 0
+    }
+}
+
 // ---------- 导出活动报名 / 开班申请报表（#105：旧报表菜单退场，导出搬到业务页）----------
 // 两个入口数据源不同，文案已区分：
 //   「导出报名名单」= activity/enroll/export，导 la_enrollment 报名名单（本页表格数据）；
@@ -1753,6 +2068,22 @@ function statusTag(status: number) {
     if (status === 1) return 'success'
     if (status === 2) return 'danger'
     return 'warning'
+}
+
+// 活动报名明细状态：0 待支付 / 1 已支付 / 3 已取消（与支付状态分开显示）
+function signupStatusTag(status: any) {
+    const value = Number(status)
+    if (value === 1) return 'success'
+    if (value === 3) return 'info'
+    return 'warning'
+}
+
+// 支付状态：1 已支付 / 0 待支付 / 4 已取消 / -1 免费（plain）
+function payStatusTag(payStatus: any) {
+    const value = Number(payStatus)
+    if (value === 1) return 'success'
+    if (value === 0) return 'warning'
+    return 'info'
 }
 
 function applyStatusTag(status: string) {

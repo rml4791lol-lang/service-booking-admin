@@ -216,7 +216,7 @@
                         </el-tag>
                     </template>
                 </el-table-column>
-                <el-table-column label="操作" width="230" fixed="right">
+                <el-table-column label="操作" width="300" fixed="right">
                     <template #default="{ row }">
                         <el-button
                             v-perms="['course.class/detail']"
@@ -233,6 +233,15 @@
                             @click="openEdit(row)"
                         >
                             编辑
+                        </el-button>
+                        <el-button
+                            v-perms="['course.class/regenerateLessons']"
+                            type="primary"
+                            link
+                            :loading="regeneratingId === row.id"
+                            @click="handleRegenerate(row)"
+                        >
+                            重建场次
                         </el-button>
                         <el-button
                             v-perms="['course.class/status']"
@@ -885,6 +894,7 @@ import {
     classEdit,
     classEnrolledStudents,
     classList,
+    classRegenerateLessons,
     classStatus,
     communityAll,
     instructorAll
@@ -1071,6 +1081,7 @@ const detail = ref<any>(null)
 const students = ref<any[]>([])
 const deletingId = ref(0)
 const statusSavingId = ref(0)
+const regeneratingId = ref(0)
 
 const detailScheduleRows = computed(() => {
     if (!detail.value) return []
@@ -1576,13 +1587,19 @@ async function submit() {
     try {
         const payload = toPayload()
         const editing = form.id > 0
+        let result: any = null
         if (editing) {
-            await classEdit(payload)
+            result = await classEdit(payload)
         } else {
             await classAdd(payload)
         }
         formVisible.value = false
-        feedback.msgSuccess('保存成功')
+        // 排课变化时后端会在同一事务内重建未来场次，直接展示统计
+        if (editing && result?.regenerated) {
+            feedback.msgSuccess(`保存成功；${regenerateStatsText(result)}`)
+        } else {
+            feedback.msgSuccess('保存成功')
+        }
         if (editing) await getLists()
         else await resetPage()
     } catch {
@@ -1594,6 +1611,35 @@ async function submit() {
 
 function isProtectedDeleteMessage(message: string) {
     return /报名|订单|预约/.test(message)
+}
+
+// 重建统计文案：删除 X / 新增 Y / 保留 Z（有预约）
+function regenerateStatsText(stats: any) {
+    const deleted = Number(stats?.deleted) || 0
+    const created = Number(stats?.created) || 0
+    const kept = Number(stats?.kept) || 0
+    return `已重建场次：删除 ${deleted} 个，新增 ${created} 个，保留 ${kept} 个有预约场次`
+}
+
+// 按当前排课规则重建未来场次：只删除今天之后无有效预约的场次，有预约的保留不动
+async function handleRegenerate(row: any) {
+    try {
+        await feedback.confirm(
+            `确定按当前排课规则重建课程「${row.name}」的未来场次？\n\n将删除今天之后无有效预约的场次，并按当前排课规则重新生成；已有预约的场次会保留。`
+        )
+    } catch {
+        return
+    }
+    regeneratingId.value = row.id
+    try {
+        const stats: any = await classRegenerateLessons({ id: row.id })
+        feedback.msgSuccess(regenerateStatsText(stats))
+        await getLists()
+    } catch {
+        // 请求层已提示
+    } finally {
+        regeneratingId.value = 0
+    }
 }
 
 async function handleDelete(row: any) {

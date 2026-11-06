@@ -149,14 +149,57 @@
             </div>
 
             <el-table :data="courses" class="w-full">
-                <el-table-column label="所在班级" prop="className" min-width="180" show-overflow-tooltip />
+                <el-table-column
+                    label="所在班级"
+                    prop="className"
+                    min-width="180"
+                    show-overflow-tooltip
+                />
                 <el-table-column label="教练" prop="instructorName" min-width="100" />
                 <el-table-column label="购买课时" prop="totalLessons" width="100" />
-                <el-table-column label="已上课时" prop="usedLessons" width="100" />
-                <el-table-column label="剩余课时" prop="remainLessons" width="100" />
+                <el-table-column label="已上课时" width="130">
+                    <template #header>
+                        <el-tooltip
+                            content="按消课流水派生（含调整流水），字段不一致时以流水为准"
+                            placement="top"
+                        >
+                            <span class="cursor-help border-b border-dashed border-current"
+                                >已上课时</span
+                            >
+                        </el-tooltip>
+                    </template>
+                    <template #default="{ row }">
+                        <span>{{ row.usedLessons }}</span>
+                        <el-tooltip
+                            v-if="row.fieldMismatch"
+                            :content="`账面字段已用 ${row.fieldUsedLessons}/剩余 ${row.fieldRemainLessons} 与流水派生不一致，以流水派生为准`"
+                            placement="top"
+                        >
+                            <el-tag
+                                class="ml-1"
+                                type="warning"
+                                size="small"
+                                data-test="field-mismatch-tag"
+                                >差异</el-tag
+                            >
+                        </el-tooltip>
+                    </template>
+                </el-table-column>
+                <el-table-column label="剩余课时" prop="remainLessons" width="100">
+                    <template #default="{ row }">
+                        <span>{{ row.remainLessons }}</span>
+                        <el-tag v-if="row.fieldMismatch" class="ml-1" type="warning" size="small">
+                            差异
+                        </el-tag>
+                    </template>
+                </el-table-column>
                 <el-table-column label="状态" width="110">
                     <template #default="{ row }">
-                        <el-tag :type="row.status === 2 ? 'danger' : row.status === 1 ? 'info' : 'success'">
+                        <el-tag
+                            :type="
+                                row.status === 2 ? 'danger' : row.status === 1 ? 'info' : 'success'
+                            "
+                        >
                             {{ row.statusText }}
                         </el-tag>
                     </template>
@@ -202,7 +245,12 @@
                 <el-table-column label="时间段" prop="timeSlot" min-width="130">
                     <template #default="{ row }">{{ row.timeSlot || '-' }}</template>
                 </el-table-column>
-                <el-table-column label="班级" prop="className" min-width="160" show-overflow-tooltip />
+                <el-table-column
+                    label="班级"
+                    prop="className"
+                    min-width="160"
+                    show-overflow-tooltip
+                />
                 <el-table-column label="教练" prop="instructorName" min-width="100" />
                 <el-table-column label="课次" width="100">
                     <template #default="{ row }">
@@ -212,7 +260,16 @@
                 <el-table-column label="类型" prop="sourceTypeText" width="110" />
                 <el-table-column label="出勤状态" width="100">
                     <template #default="{ row }">
-                        <el-tag v-if="row.attendanceStatusText" :type="row.attendanceStatus === 2 ? 'warning' : row.attendanceStatus === 3 ? 'danger' : 'success'">
+                        <el-tag
+                            v-if="row.attendanceStatusText"
+                            :type="
+                                row.attendanceStatus === 2
+                                    ? 'warning'
+                                    : row.attendanceStatus === 3
+                                    ? 'danger'
+                                    : 'success'
+                            "
+                        >
                             {{ row.attendanceStatusText }}
                         </el-tag>
                         <span v-else class="text-tx-secondary">-</span>

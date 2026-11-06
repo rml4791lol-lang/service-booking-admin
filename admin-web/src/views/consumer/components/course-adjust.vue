@@ -18,7 +18,10 @@
                     <span>{{ row?.className || '-' }}</span>
                 </el-form-item>
                 <el-form-item label="当前总/剩余">
-                    <span>总课时 {{ row?.totalLessons ?? 0 }}，剩余 {{ row?.remainLessons ?? 0 }}</span>
+                    <span>
+                        总课时 {{ row?.totalLessons ?? 0 }}，剩余
+                        {{ row?.remainLessons ?? 0 }}（流水派生）
+                    </span>
                 </el-form-item>
                 <el-form-item label="总课时" prop="totalLessons">
                     <el-input
@@ -101,11 +104,22 @@ const preview = computed(() => {
     const total = toNumber(formData.totalLessons)
     const remain = toNumber(formData.remainLessons)
     const nextTotal = total === null ? Number(props.row?.totalLessons ?? 0) : total
-    const nextRemain = remain === null ? Number(props.row?.remainLessons ?? 0) : remain
-    if (!Number.isFinite(nextTotal) || !Number.isFinite(nextRemain) || nextRemain > nextTotal) {
+    if (remain === null) {
+        // 只调总课时：已用保持流水口径不变，剩余 = 总课时 - 流水已用（行内 usedLessons 即流水派生值）
+        const derivedUsed = Number(props.row?.usedLessons ?? 0)
+        if (
+            !Number.isFinite(nextTotal) ||
+            !Number.isFinite(derivedUsed) ||
+            derivedUsed > nextTotal
+        ) {
+            return { used: '-', remain: '-' }
+        }
+        return { used: derivedUsed, remain: nextTotal - derivedUsed }
+    }
+    if (!Number.isFinite(nextTotal) || !Number.isFinite(remain) || remain > nextTotal) {
         return { used: '-', remain: '-' }
     }
-    return { used: nextTotal - nextRemain, remain: nextRemain }
+    return { used: nextTotal - remain, remain }
 })
 
 const validateLessons = (_rule: any, _value: any, callback: any) => {
@@ -114,14 +128,23 @@ const validateLessons = (_rule: any, _value: any, callback: any) => {
     if (total === null && remain === null) {
         return callback(new Error('请至少填写总课时或剩余课时'))
     }
-    if ((total !== null && (!Number.isInteger(total) || total < 0)) ||
-        (remain !== null && (!Number.isInteger(remain) || remain < 0))) {
+    if (
+        (total !== null && (!Number.isInteger(total) || total < 0)) ||
+        (remain !== null && (!Number.isInteger(remain) || remain < 0))
+    ) {
         return callback(new Error('课时必须是非负整数'))
     }
     const nextTotal = total === null ? Number(props.row?.totalLessons ?? 0) : total
     const nextRemain = remain === null ? Number(props.row?.remainLessons ?? 0) : remain
     if (nextRemain > nextTotal) {
         return callback(new Error('剩余课时不能大于总课时'))
+    }
+    if (remain === null) {
+        // 只调总课时：不能缩到流水已用之下（缩量需显式改剩余）
+        const derivedUsed = Number(props.row?.usedLessons ?? 0)
+        if (Number.isFinite(derivedUsed) && derivedUsed > nextTotal) {
+            return callback(new Error(`总课时不能小于流水已用课时${derivedUsed}`))
+        }
     }
     callback()
 }

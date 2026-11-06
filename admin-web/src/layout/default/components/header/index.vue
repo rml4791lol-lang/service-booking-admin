@@ -20,7 +20,7 @@
                 <div class="flex items-center px-2" v-if="!isMobile && settingStore.showCrumb">
                     <breadcrumb />
                 </div>
-                <div class="flex items-center px-2 text-tx-regular" v-if="!isMobile">平台名称：服务培训管理</div>
+                <div class="flex items-center px-2 text-tx-regular" v-if="!isMobile">平台名称：预约服务平台</div>
             </div>
             <div class="flex">
                 <div class="navbar-item" v-if="!isMobile">

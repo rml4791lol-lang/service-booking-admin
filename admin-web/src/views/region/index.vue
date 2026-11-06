@@ -222,7 +222,7 @@
                     </el-col>
                 </el-row>
                 <el-form-item label="详细地址">
-                    <el-input v-model="communityForm.address" maxlength="255" show-word-limit placeholder="如：株洲市天元区栗雨街道湘水湾" />
+                    <el-input v-model="communityForm.address" maxlength="255" show-word-limit placeholder="如：XX市XX区XX街道XX小区" />
                 </el-form-item>
                 <el-row :gutter="12">
                     <el-col :span="12">
@@ -287,7 +287,7 @@
                     </el-col>
                 </el-row>
                 <el-form-item label="详细地址">
-                    <el-input v-model="areaForm.address" maxlength="255" show-word-limit placeholder="如：株洲市天元区嵩山路街道建发央著" />
+                    <el-input v-model="areaForm.address" maxlength="255" show-word-limit placeholder="如：XX市XX区XX街道XX小区" />
                 </el-form-item>
                 <el-row :gutter="12">
                     <el-col :span="12">

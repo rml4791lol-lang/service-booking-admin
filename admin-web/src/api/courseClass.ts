@@ -27,6 +27,11 @@ export function classStatus(params: any) {
     return request.post({ url: '/course.class/status', params })
 }
 
+// 按当前排课规则重建未来场次：删除今天之后无有效预约的场次，保留有预约场次
+export function classRegenerateLessons(params: any) {
+    return request.post({ url: '/course.class/regenerateLessons', params })
+}
+
 export function classStats() {
     return request.get({ url: '/course.class/stats' })
 }

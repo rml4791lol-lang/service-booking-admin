@@ -56,38 +56,62 @@
             <div class="mb-4">
                 <div class="text-lg font-medium">课时账户（老课包）</div>
                 <div class="mt-1 text-sm text-tx-secondary">
-                    数据来自老系统 la_user_course，一行一个课包；「已用/剩余」为账面值，
-                    可直接调整用于向券体系转化。「系统已上」按消课流水重算，与学员详情口径一致，仅供核对。
+                    数据来自老系统 la_user_course，一行一个课包；「已用/剩余」按消课流水派生
+                    （含调整流水，与学员详情/退款重算同口径），与账面字段不一致时标「差异」。
                 </div>
             </div>
-            <el-table
-                v-loading="pager.loading"
-                :data="pager.lists"
-                data-test="legacy-course-table"
-            >
-                <el-table-column label="学员" prop="studentName" min-width="100" show-overflow-tooltip>
+            <el-table v-loading="pager.loading" :data="pager.lists" data-test="legacy-course-table">
+                <el-table-column
+                    label="学员"
+                    prop="studentName"
+                    min-width="100"
+                    show-overflow-tooltip
+                >
                     <template #default="{ row }">{{ row.studentName || '-' }}</template>
                 </el-table-column>
                 <el-table-column label="手机号" prop="mobile" min-width="120">
                     <template #default="{ row }">{{ row.mobile || '-' }}</template>
                 </el-table-column>
-                <el-table-column label="课程" prop="className" min-width="180" show-overflow-tooltip>
+                <el-table-column
+                    label="课程"
+                    prop="className"
+                    min-width="180"
+                    show-overflow-tooltip
+                >
                     <template #default="{ row }">{{ row.className || '-' }}</template>
                 </el-table-column>
                 <el-table-column label="总课时" prop="totalLessons" width="90" />
-                <el-table-column label="已用" prop="usedLessons" width="80" />
-                <el-table-column label="剩余" prop="remainLessons" width="80" />
+                <el-table-column label="已用" width="90">
+                    <template #default="{ row }">
+                        <span>{{ row.usedLessons }}</span>
+                        <el-tag v-if="row.fieldMismatch" class="ml-1" type="warning" size="small"
+                            >差异</el-tag
+                        >
+                    </template>
+                </el-table-column>
+                <el-table-column label="剩余" width="90">
+                    <template #default="{ row }">
+                        <span>{{ row.remainLessons }}</span>
+                        <el-tag v-if="row.fieldMismatch" class="ml-1" type="warning" size="small"
+                            >差异</el-tag
+                        >
+                    </template>
+                </el-table-column>
                 <el-table-column label="系统已上" prop="systemUsedLessons" width="100">
                     <template #header>
                         <el-tooltip content="按消课流水重算，口径与学员详情一致" placement="top">
-                            <span class="cursor-help border-b border-dashed border-current">系统已上</span>
+                            <span class="cursor-help border-b border-dashed border-current"
+                                >系统已上</span
+                            >
                         </el-tooltip>
                     </template>
                 </el-table-column>
                 <el-table-column label="状态" width="100">
                     <template #default="{ row }">
                         <el-tag
-                            :type="row.status === 2 ? 'danger' : row.status === 1 ? 'info' : 'success'"
+                            :type="
+                                row.status === 2 ? 'danger' : row.status === 1 ? 'info' : 'success'
+                            "
                         >
                             {{ row.statusText }}
                         </el-tag>
