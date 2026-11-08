@@ -1,6 +1,6 @@
 # 项目配置
 like:
-  unique-identification: lxt-local-dev-salt
+  unique-identification: ${APP_UNIQUE_IDENTIFICATION:dev-local-salt}
   # 对外访问域名 (用于拼接图片等资源的绝对路径)
   url: https://zzty02.starvitech.com
   upload-directory: /www/uploads/likeadmin-java/ # 上传目录

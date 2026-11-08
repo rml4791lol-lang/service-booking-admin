@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mdd.admin.mapper.UserCourseQueryMapper">
+
+    <!--
+      老课包列表：la_user_course 一行 = 一个可调整课包。
+      过滤条件只作用于展示字段（学员/手机号/课程名/状态），不改变返回粒度；
+      JOIN 均为 1:1，分页 count 不会被放大。
+    -->
+    <select id="page" resultType="com.mdd.common.entity.course.UserCourse">
+        SELECT uc.*
+        FROM la_user_course uc
+        LEFT JOIN la_user u ON u.id = uc.user_id
+        LEFT JOIN la_student s ON s.id = uc.student_id AND s.delete_time IS NULL
+        LEFT JOIN la_course_class c ON c.id = uc.course_class_id
+        <where>
+            uc.delete_time IS NULL
+            <if test="q.studentName != null and q.studentName != ''">
+                AND (s.name LIKE CONCAT('%', #{q.studentName}, '%')
+                     OR u.real_name LIKE CONCAT('%', #{q.studentName}, '%')
+                     OR u.nickname LIKE CONCAT('%', #{q.studentName}, '%'))
+            </if>
+            <if test="q.mobile != null and q.mobile != ''">
+                AND u.mobile LIKE CONCAT('%', #{q.mobile}, '%')
+            </if>
+            <if test="q.className != null and q.className != ''">
+                AND c.name LIKE CONCAT('%', #{q.className}, '%')
+            </if>
+            <if test="q.status != null and q.status >= 0">
+                AND uc.status = #{q.status}
+            </if>
+        </where>
+        ORDER BY uc.id DESC
+    </select>
+</mapper>

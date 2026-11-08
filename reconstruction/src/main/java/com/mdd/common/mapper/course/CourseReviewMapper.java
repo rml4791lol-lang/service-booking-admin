@@ -1,0 +1,17 @@
+/*
+ * Decompiled with CFR 0.152.
+ * 
+ * Could not load the following classes:
+ *  org.apache.ibatis.annotations.Mapper
+ */
+package com.mdd.common.mapper.course;
+
+import com.mdd.common.core.basics.IBaseMapper;
+import com.mdd.common.entity.course.CourseReview;
+import org.apache.ibatis.annotations.Mapper;
+
+@Mapper
+public interface CourseReviewMapper
+extends IBaseMapper<CourseReview> {
+}
+

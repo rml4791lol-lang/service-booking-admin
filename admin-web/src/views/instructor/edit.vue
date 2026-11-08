@@ -69,7 +69,7 @@
                     <el-form-item label="专业领域" prop="specialty">
                         <el-input
                             v-model="formData.specialty"
-                            placeholder="如：篮球、体适能"
+                            placeholder="如：篮球、体能训练"
                             clearable
                         />
                     </el-form-item>

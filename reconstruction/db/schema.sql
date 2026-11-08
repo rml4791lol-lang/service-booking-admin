@@ -55,7 +55,7 @@ CREATE TABLE `la_activity_booking` (
   KEY `idx_activity_status` (`activity_id`,`status`),
   KEY `idx_order` (`order_id`),
   KEY `idx_user` (`user_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='活动报名批次（学员+陪同，一次报名一行）';
+) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='活动报名批次（学员+陪同，一次报名一行）';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_activity_enroll_alert`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -104,7 +104,7 @@ CREATE TABLE `la_activity_signup` (
   KEY `idx_user` (`user_id`),
   KEY `idx_order` (`order_id`),
   KEY `idx_status_create` (`status`,`create_time`)
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='活动报名明细（占名额）';
+) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='活动报名明细（占名额）';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_admin`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -480,7 +480,7 @@ CREATE TABLE `la_coupon_flow` (
   KEY `idx_user_student` (`user_id`,`student_id`),
   KEY `idx_create_time` (`create_time`),
   KEY `idx_order_id` (`order_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=51 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='次数券流水（只追加，不可删除）';
+) ENGINE=InnoDB AUTO_INCREMENT=592 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='次数券流水（只追加，不可删除）';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_coupon_goods`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -543,7 +543,34 @@ CREATE TABLE `la_coupon_instance` (
   KEY `idx_goods_id` (`goods_id`),
   KEY `idx_status_expire` (`status`,`expire_time`),
   KEY `idx_order_id` (`order_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=50 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='次数券实例';
+) ENGINE=InnoDB AUTO_INCREMENT=589 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='次数券实例';
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `la_coupon_instance_bak_20261107`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `la_coupon_instance_bak_20261107` (
+  `id` int(10) unsigned NOT NULL DEFAULT '0' COMMENT '券实例ID',
+  `sn` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '券编号',
+  `user_id` int(10) unsigned NOT NULL DEFAULT '0' COMMENT '持券用户ID（la_user.id）',
+  `student_id` int(10) unsigned NOT NULL DEFAULT '0' COMMENT '持券学员ID（la_student.id）',
+  `goods_id` int(10) unsigned NOT NULL DEFAULT '0' COMMENT '券商品ID（la_coupon_goods.id）',
+  `title` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '券名称快照',
+  `total` int(11) NOT NULL DEFAULT '0' COMMENT '总次数',
+  `remaining` int(11) NOT NULL DEFAULT '0' COMMENT '剩余次数',
+  `scope` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '适用范围文案快照',
+  `scope_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'all' COMMENT '适用范围类型快照',
+  `course_ids` varchar(1000) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '限定课程ID，逗号分隔；空=不限',
+  `area_ids` varchar(1000) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '限定小区ID，逗号分隔；空=不限',
+  `status` tinyint(1) NOT NULL DEFAULT '1' COMMENT '状态：1=有效，2=已用完，3=已过期，4=已作废',
+  `start_time` int(10) unsigned DEFAULT NULL COMMENT '生效时间',
+  `expire_time` int(10) unsigned DEFAULT NULL COMMENT '到期时间（当天 23:59:59；NULL=长期有效）',
+  `order_id` int(10) unsigned DEFAULT NULL COMMENT '发放来源订单ID（NULL=后台发放/补发，不参与唯一）',
+  `order_seq` int(11) NOT NULL DEFAULT '0' COMMENT '同一订单内第几张券（0=旧数据/单张）',
+  `source` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'purchase' COMMENT '来源：purchase=购买，grant=后台发放，compensate=补发',
+  `remark` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '备注',
+  `create_time` int(10) unsigned DEFAULT NULL COMMENT '创建时间',
+  `update_time` int(10) unsigned DEFAULT NULL COMMENT '更新时间'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_coupon_template`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -583,7 +610,7 @@ CREATE TABLE `la_course_booking` (
   UNIQUE KEY `uk_user_lesson_student` (`user_id`,`lesson_id`,`student_id`),
   KEY `idx_lesson_id` (`lesson_id`),
   KEY `idx_class_date` (`course_class_id`,`lesson_date`)
-) ENGINE=InnoDB AUTO_INCREMENT=472 DEFAULT CHARSET=utf8mb4 COMMENT='课时预约表';
+) ENGINE=InnoDB AUTO_INCREMENT=475 DEFAULT CHARSET=utf8mb4 COMMENT='课时预约表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_course_booking_bak_20260629`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -680,7 +707,7 @@ CREATE TABLE `la_course_class` (
   KEY `idx_instructor` (`instructor_id`),
   KEY `idx_community` (`community_id`),
   KEY `idx_area` (`area_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=90 DEFAULT CHARSET=utf8mb4 COMMENT='班级管理表';
+) ENGINE=InnoDB AUTO_INCREMENT=91 DEFAULT CHARSET=utf8mb4 COMMENT='班级管理表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_course_consume_log`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -701,7 +728,7 @@ CREATE TABLE `la_course_consume_log` (
   KEY `idx_user_class` (`user_id`,`course_class_id`),
   KEY `idx_user_class_student` (`user_id`,`course_class_id`,`student_id`),
   KEY `idx_user_course_id` (`user_course_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=1267 DEFAULT CHARSET=utf8mb4 COMMENT='课程核销流水表';
+) ENGINE=InnoDB AUTO_INCREMENT=1269 DEFAULT CHARSET=utf8mb4 COMMENT='课程核销流水表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_course_consume_log_bak_20260629`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -732,7 +759,7 @@ CREATE TABLE `la_course_lesson_log` (
   PRIMARY KEY (`id`),
   KEY `idx_course_class` (`course_class_id`),
   KEY `idx_instructor` (`instructor_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=181 DEFAULT CHARSET=utf8mb4 COMMENT='课程课后总结表';
+) ENGINE=InnoDB AUTO_INCREMENT=183 DEFAULT CHARSET=utf8mb4 COMMENT='课程课后总结表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_course_makeup`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1080,7 +1107,7 @@ CREATE TABLE `la_file` (
   `update_time` int(10) DEFAULT NULL COMMENT '更新时间',
   `delete_time` int(10) DEFAULT NULL COMMENT '删除时间',
   PRIMARY KEY (`id`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=431 DEFAULT CHARSET=utf8mb4 COMMENT='文件表';
+) ENGINE=InnoDB AUTO_INCREMENT=439 DEFAULT CHARSET=utf8mb4 COMMENT='文件表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_file_cate`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1201,7 +1228,7 @@ CREATE TABLE `la_instructor` (
   KEY `idx_phone` (`phone`),
   KEY `idx_status` (`status`),
   KEY `idx_instructor_user_id` (`user_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=50 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='教练表';
+) ENGINE=InnoDB AUTO_INCREMENT=51 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='教练表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_instructor_account_audit`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1222,7 +1249,7 @@ CREATE TABLE `la_instructor_account_audit` (
   KEY `idx_audit_instructor` (`instructor_id`,`id`),
   KEY `idx_audit_action` (`action`),
   KEY `idx_audit_create_time` (`create_time`)
-) ENGINE=InnoDB AUTO_INCREMENT=8 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='教练账号操作审计表';
+) ENGINE=InnoDB AUTO_INCREMENT=13 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='教练账号操作审计表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_instructor_account_log`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1512,7 +1539,7 @@ CREATE TABLE `la_message` (
   KEY `idx_type` (`type`),
   KEY `idx_receiver` (`receiver_type`,`receiver_id`),
   KEY `idx_sender` (`sender_type`,`sender_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=1250 DEFAULT CHARSET=utf8mb4 COMMENT='消息通知表';
+) ENGINE=InnoDB AUTO_INCREMENT=1254 DEFAULT CHARSET=utf8mb4 COMMENT='消息通知表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_notice_record`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1588,7 +1615,7 @@ CREATE TABLE `la_operation_log` (
   `ip` varchar(39) NOT NULL DEFAULT '' COMMENT 'ip地址',
   `create_time` int(10) DEFAULT NULL COMMENT '创建时间',
   PRIMARY KEY (`id`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=577 DEFAULT CHARSET=utf8mb4 COMMENT='系统日志表';
+) ENGINE=InnoDB AUTO_INCREMENT=589 DEFAULT CHARSET=utf8mb4 COMMENT='系统日志表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_operation_log_advfix_backup_20261025`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1607,6 +1634,26 @@ CREATE TABLE `la_operation_log_advfix_backup_20261025` (
   `create_time` int(10) DEFAULT NULL COMMENT '创建时间',
   PRIMARY KEY (`id`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=476 DEFAULT CHARSET=utf8mb4 COMMENT='系统日志表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `la_photo_authorization`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `la_photo_authorization` (
+  `id` int(11) unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `user_id` int(11) NOT NULL DEFAULT '0' COMMENT '家长账号ID（la_user.id）',
+  `student_id` int(10) unsigned NOT NULL DEFAULT '0' COMMENT '学员ID（la_student.id）',
+  `authorized` tinyint(1) NOT NULL DEFAULT '0' COMMENT '当前授权状态：0未授权 1已授权',
+  `authorized_at` int(10) unsigned DEFAULT NULL COMMENT '最近一次授权时间（秒）',
+  `revoked_at` int(10) unsigned DEFAULT NULL COMMENT '最近一次撤回时间（秒）',
+  `operator_type` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'parent' COMMENT '操作人类型：parent/coach/admin',
+  `operator_id` int(11) NOT NULL DEFAULT '0' COMMENT '操作人ID（家长账号/教练/管理员）',
+  `source` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'miniprogram' COMMENT '来源：miniprogram/coach_checkin/admin',
+  `create_time` int(10) unsigned DEFAULT NULL COMMENT '创建时间（秒）',
+  `update_time` int(10) unsigned DEFAULT NULL COMMENT '更新时间（秒）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_student_id` (`student_id`),
+  KEY `idx_user_id` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='课堂照片授权台账';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_recharge_order`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1639,7 +1686,7 @@ CREATE TABLE `la_recharge_order` (
   `activity_student_ids` varchar(512) NOT NULL DEFAULT '' COMMENT '活动报名学员ID，逗号分隔',
   `activity_count` int(11) NOT NULL DEFAULT '0' COMMENT '活动报名学员人数',
   PRIMARY KEY (`id`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=364 DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB AUTO_INCREMENT=366 DEFAULT CHARSET=utf8mb4;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_refund_log`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1854,7 +1901,7 @@ CREATE TABLE `la_student` (
   `delete_time` int(10) unsigned DEFAULT NULL COMMENT '删除时间',
   PRIMARY KEY (`id`),
   KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=149 DEFAULT CHARSET=utf8mb4 COMMENT='学员档案表';
+) ENGINE=InnoDB AUTO_INCREMENT=150 DEFAULT CHARSET=utf8mb4 COMMENT='学员档案表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_system_log_login`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1914,7 +1961,7 @@ CREATE TABLE `la_system_menu` (
   `create_time` int(10) unsigned NOT NULL DEFAULT '0' COMMENT '创建时间',
   `update_time` int(10) unsigned NOT NULL DEFAULT '0' COMMENT '更新时间',
   PRIMARY KEY (`id`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=444 DEFAULT CHARSET=utf8mb4 COMMENT='系统菜单表';
+) ENGINE=InnoDB AUTO_INCREMENT=446 DEFAULT CHARSET=utf8mb4 COMMENT='系统菜单表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_system_menu_advfix_backup_20261025`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -1986,7 +2033,7 @@ CREATE TABLE `la_user` (
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `sn` (`sn`) USING BTREE COMMENT '编号唯一',
   UNIQUE KEY `account` (`account`) USING BTREE COMMENT '账号唯一'
-) ENGINE=InnoDB AUTO_INCREMENT=20209 DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
+) ENGINE=InnoDB AUTO_INCREMENT=20219 DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_user_account_log`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -2022,7 +2069,7 @@ CREATE TABLE `la_user_auth` (
   `update_time` int(10) DEFAULT NULL COMMENT '更新时间',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `openid` (`openid`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=206 DEFAULT CHARSET=utf8mb4 COMMENT='用户授权表';
+) ENGINE=InnoDB AUTO_INCREMENT=216 DEFAULT CHARSET=utf8mb4 COMMENT='用户授权表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `la_user_course`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -2085,7 +2132,7 @@ CREATE TABLE `la_user_session` (
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `admin_id_client` (`user_id`,`terminal`) USING BTREE COMMENT '一个用户在一个终端只有一个token',
   UNIQUE KEY `token` (`token`) USING BTREE COMMENT 'token是唯一的'
-) ENGINE=InnoDB AUTO_INCREMENT=1701 DEFAULT CHARSET=utf8mb4 COMMENT='用户会话表';
+) ENGINE=InnoDB AUTO_INCREMENT=1740 DEFAULT CHARSET=utf8mb4 COMMENT='用户会话表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `ys_course_attendance`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -2133,7 +2180,7 @@ CREATE TABLE `ys_course_lesson` (
   KEY `idx_class_id` (`class_id`),
   KEY `idx_class_date` (`class_id`,`lesson_date`),
   KEY `idx_coach_date` (`coach_id`,`lesson_date`)
-) ENGINE=InnoDB AUTO_INCREMENT=25714 DEFAULT CHARSET=utf8mb4 COMMENT='课节预生成表';
+) ENGINE=InnoDB AUTO_INCREMENT=26014 DEFAULT CHARSET=utf8mb4 COMMENT='课节预生成表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 

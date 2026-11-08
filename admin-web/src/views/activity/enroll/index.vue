@@ -1286,7 +1286,7 @@ import feedback from '@/utils/feedback'
 
 const { toClipboard } = useClipboard()
 
-const COURSE_TYPES = ['篮球', '足球', '体适能', '跳绳', '羽毛球', '其他']
+const COURSE_TYPES = ['篮球', '足球', '体能训练', '跳绳', '羽毛球', '其他']
 const courseTypes = COURSE_TYPES
 const activeTab = ref('links')
 
